@@ -1,10 +1,10 @@
 package slip
 
 const (
-	End     = 0xC0
-	Esc     = 0xDB
-	EscEnd  = 0xDC
-	EscEsc  = 0xDD
+	End    = 0xC0
+	Esc    = 0xDB
+	EscEnd = 0xDC
+	EscEsc = 0xDD
 )
 
 // Encode wraps data in SLIP framing.

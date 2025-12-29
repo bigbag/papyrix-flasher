@@ -70,18 +70,49 @@ papyrix-flasher version
 
 The Xteink X4 has 16MB of flash memory, organized as:
 
-| Region | Address | Size | Description |
-|--------|---------|------|-------------|
-| Bootloader | 0x0000 | ~12KB | ESP32-C3 second-stage bootloader |
-| Partitions | 0x8000 | 3KB | Partition table |
-| App (OTA 0) | 0x10000 | ~6.3MB | Main application |
-| App (OTA 1) | 0x650000 | ~6.3MB | OTA update partition |
-| SPIFFS | 0xC90000 | ~3.3MB | File storage |
+- **Bootloader** at `0x0000` (~12KB) - ESP32-C3 second-stage bootloader
+- **Partitions** at `0x8000` (3KB) - Partition table
+- **App (OTA 0)** at `0x10000` (~6.3MB) - Main application
+- **App (OTA 1)** at `0x650000` (~6.3MB) - OTA update partition
+- **SPIFFS** at `0xC90000` (~3.3MB) - File storage
 
 By default, `papyrix-flasher` writes to:
 - Bootloader at 0x0000 (embedded in tool)
 - Partition table at 0x8000 (embedded in tool)
 - Firmware at 0x10000 (your file)
+
+## How It Works
+
+This tool implements the ESP32 ROM bootloader protocol to flash firmware over a USB serial connection.
+
+### Communication Stack
+
+- **Serial**: 921600 baud, 8N1, no flow control
+- **Framing**: SLIP (Serial Line Internet Protocol) with `0xC0` delimiters and escape sequences for special bytes
+- **Protocol**: ESP32 ROM bootloader binary protocol with request/response packets and XOR checksum
+
+### Bootloader Entry
+
+The ESP32-C3 enters bootloader mode via DTR/RTS signal sequence that controls the EN (reset) and GPIO0 (boot mode) pins through transistor drivers:
+
+1. Assert EN low (reset the chip)
+2. Assert GPIO0 low while releasing EN (boot into download mode)
+3. Release GPIO0 (chip stays in bootloader)
+
+### Flash Sequence
+
+1. **Reset to bootloader** - DTR/RTS signal sequence
+2. **SYNC** - Establish communication with bootloader (up to 10 retries)
+3. **SPI_ATTACH** - Attach the SPI flash chip
+4. **SPI_SET_PARAMS** - Configure flash size (16MB)
+5. **FLASH_DEFL_BEGIN** - Start compressed flash session, erase sectors
+6. **FLASH_DEFL_DATA** - Send zlib-compressed firmware in 1KB blocks (with retry on failure)
+7. **FLASH_DEFL_END** - Finalize flash session
+8. **Hard reset** - Reboot into the new firmware
+
+### Compression
+
+Firmware is compressed using zlib (deflate) before transfer. The bootloader decompresses data on-the-fly, reducing transfer time significantly (typically 2-4x compression ratio).
 
 ## Troubleshooting
 
@@ -119,7 +150,14 @@ papyrix-flasher/
 ├── cmd/papyrix-flasher/    # CLI entry point
 ├── internal/
 │   ├── slip/               # SLIP protocol encoding/decoding
+│   │   ├── slip.go
+│   │   └── slip_test.go
 │   ├── protocol/           # ESP32 bootloader protocol
+│   │   ├── commands.go
+│   │   ├── commands_test.go
+│   │   ├── packet.go
+│   │   ├── packet_test.go
+│   │   └── esp32c3.go
 │   ├── serial/             # Serial port abstraction
 │   ├── detect/             # Device auto-detection
 │   └── flasher/            # High-level flash operations
@@ -137,12 +175,26 @@ make build
 # Build for all platforms
 make build-all
 
-# Run tests
-make test
-
 # Update embedded binaries from papyrix-reader
 make update-embedded
 ```
+
+### Testing
+
+```bash
+# Run all tests
+make test
+
+# Run tests with verbose output
+go test -v ./...
+
+# Run tests for specific packages
+go test -v ./internal/slip ./internal/protocol
+```
+
+Unit tests cover the core protocol packages:
+- **slip**: SLIP framing encode/decode, escape sequences, frame extraction
+- **protocol**: Packet encoding/decoding, checksum calculation, command data generation
 
 ## References
 

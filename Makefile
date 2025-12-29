@@ -3,44 +3,42 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
-.PHONY: build build-all clean test fmt lint release
+.PHONY: build build-all clean test fmt lint release help
 
-# Build for current platform
-build:
+.DEFAULT_GOAL := help
+
+## Build:
+
+build: ## Build for current platform
 	go build $(LDFLAGS) -o bin/papyrix-flasher ./cmd/papyrix-flasher
 
-# Build for all platforms
-build-all: build-linux build-darwin build-windows
+build-all: build-linux build-darwin build-windows ## Build for all platforms
 
-build-linux:
+build-linux: ## Build for Linux (amd64, arm64)
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/papyrix-flasher-linux-amd64 ./cmd/papyrix-flasher
 	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/papyrix-flasher-linux-arm64 ./cmd/papyrix-flasher
 
-build-darwin:
+build-darwin: ## Build for macOS (amd64, arm64)
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/papyrix-flasher-darwin-amd64 ./cmd/papyrix-flasher
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/papyrix-flasher-darwin-arm64 ./cmd/papyrix-flasher
 
-build-windows:
+build-windows: ## Build for Windows (amd64)
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/papyrix-flasher-windows-amd64.exe ./cmd/papyrix-flasher
 
-# Clean build artifacts
-clean:
-	rm -rf bin/
+## Development:
 
-# Run tests
-test:
+test: ## Run tests
 	go test -v ./...
 
-# Format code
-fmt:
+fmt: ## Format code
 	go fmt ./...
 
-# Run linter
-lint:
+lint: ## Run linter (requires golangci-lint)
 	golangci-lint run
 
-# Create release archives
-release: build-all
+## Release:
+
+release: build-all ## Create release archives
 	mkdir -p release
 	cd bin && tar czf ../release/papyrix-flasher-$(VERSION)-linux-amd64.tar.gz papyrix-flasher-linux-amd64
 	cd bin && tar czf ../release/papyrix-flasher-$(VERSION)-linux-arm64.tar.gz papyrix-flasher-linux-arm64
@@ -48,8 +46,12 @@ release: build-all
 	cd bin && tar czf ../release/papyrix-flasher-$(VERSION)-darwin-arm64.tar.gz papyrix-flasher-darwin-arm64
 	cd bin && zip ../release/papyrix-flasher-$(VERSION)-windows-amd64.zip papyrix-flasher-windows-amd64.exe
 
-# Update embedded binaries from papyrix-reader
-update-embedded:
+## Maintenance:
+
+clean: ## Clean build artifacts
+	rm -rf bin/ release/
+
+update-embedded: ## Update embedded binaries from papyrix-reader
 	@if [ -d "../papyrix-reader/.pio/build/default" ]; then \
 		cp ../papyrix-reader/.pio/build/default/bootloader.bin embedded/; \
 		cp ../papyrix-reader/.pio/build/default/partitions.bin embedded/; \
@@ -59,6 +61,20 @@ update-embedded:
 		exit 1; \
 	fi
 
-# Install locally
-install: build
-	cp bin/papyrix-flasher $(GOPATH)/bin/ || cp bin/papyrix-flasher /usr/local/bin/
+install: build ## Install locally to GOPATH or /usr/local/bin
+	cp bin/papyrix-flasher $(GOPATH)/bin/ 2>/dev/null || cp bin/papyrix-flasher /usr/local/bin/
+
+## Help:
+
+help: ## Show this help
+	@echo "Papyrix Flasher - Build System"
+	@echo ""
+	@echo "Usage: make [target]"
+	@echo ""
+	@awk 'BEGIN {FS = ":.*##"; section=""} \
+		/^##/ { section=substr($$0, 4); next } \
+		/^[a-zA-Z_-]+:.*##/ { \
+			if (section != "") { printf "\n\033[1m%s\033[0m\n", section; section="" } \
+			printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 \
+		}' $(MAKEFILE_LIST)
+	@echo ""

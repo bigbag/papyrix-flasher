@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build all platforms
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          COMMIT="${COMMIT_SHA}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          LDFLAGS="-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}"
+
+          mkdir -p dist
+
+          # Linux amd64
+          GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/papyrix-flasher-linux-amd64 ./cmd/papyrix-flasher
+          tar -czf "dist/papyrix-flasher-${VERSION}-linux-amd64.tar.gz" -C dist papyrix-flasher-linux-amd64
+
+          # Linux arm64
+          GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/papyrix-flasher-linux-arm64 ./cmd/papyrix-flasher
+          tar -czf "dist/papyrix-flasher-${VERSION}-linux-arm64.tar.gz" -C dist papyrix-flasher-linux-arm64
+
+          # macOS amd64
+          GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/papyrix-flasher-darwin-amd64 ./cmd/papyrix-flasher
+          tar -czf "dist/papyrix-flasher-${VERSION}-darwin-amd64.tar.gz" -C dist papyrix-flasher-darwin-amd64
+
+          # macOS arm64
+          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/papyrix-flasher-darwin-arm64 ./cmd/papyrix-flasher
+          tar -czf "dist/papyrix-flasher-${VERSION}-darwin-arm64.tar.gz" -C dist papyrix-flasher-darwin-arm64
+
+          # Windows amd64
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/papyrix-flasher-windows-amd64.exe ./cmd/papyrix-flasher
+          cd dist && zip "papyrix-flasher-${VERSION}-windows-amd64.zip" papyrix-flasher-windows-amd64.exe && cd ..
+
+          # Create version file for release action
+          echo "${VERSION}" > dist/version.txt
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=$(cat dist/version.txt)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/papyrix-flasher-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz
+            dist/papyrix-flasher-${{ steps.version.outputs.VERSION }}-linux-arm64.tar.gz
+            dist/papyrix-flasher-${{ steps.version.outputs.VERSION }}-darwin-amd64.tar.gz
+            dist/papyrix-flasher-${{ steps.version.outputs.VERSION }}-darwin-arm64.tar.gz
+            dist/papyrix-flasher-${{ steps.version.outputs.VERSION }}-windows-amd64.zip

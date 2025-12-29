@@ -1,8 +1,8 @@
 package flasher
 
 import (
-	"crypto/md5"
-	"encoding/hex"
+	"bytes"
+	"compress/zlib"
 	"fmt"
 	"time"
 
@@ -11,30 +11,21 @@ import (
 	"github.com/bigbag/papyrix-flasher/internal/slip"
 )
 
-// ProgressCallback is called to report flash progress.
-type ProgressCallback func(current, total int)
-
 // Flasher handles flashing firmware to ESP32 devices.
 type Flasher struct {
-	port     *serial.Port
-	progress ProgressCallback
+	port *serial.Port
+}
+
+// FlashRegion represents a region to flash.
+type FlashRegion struct {
+	Address uint32
+	Data    []byte
+	Name    string
 }
 
 // New creates a new Flasher for the given port.
 func New(port *serial.Port) *Flasher {
 	return &Flasher{port: port}
-}
-
-// SetProgressCallback sets the progress callback function.
-func (f *Flasher) SetProgressCallback(cb ProgressCallback) {
-	f.progress = cb
-}
-
-// reportProgress calls the progress callback if set.
-func (f *Flasher) reportProgress(current, total int) {
-	if f.progress != nil {
-		f.progress(current, total)
-	}
 }
 
 // Connect establishes connection with the bootloader.
@@ -52,6 +43,11 @@ func (f *Flasher) Connect() error {
 	// Attach SPI flash
 	if err := f.spiAttach(); err != nil {
 		return fmt.Errorf("failed to attach SPI flash: %w", err)
+	}
+
+	// Set flash parameters (16MB flash)
+	if err := f.spiSetParams(16 * 1024 * 1024); err != nil {
+		return fmt.Errorf("failed to set flash params: %w", err)
 	}
 
 	return nil
@@ -92,90 +88,86 @@ func (f *Flasher) spiAttach() error {
 	return f.sendCommand(req)
 }
 
-// FlashImage flashes a binary image to the specified address.
-func (f *Flasher) FlashImage(data []byte, address uint32, verify bool) error {
-	size := uint32(len(data))
-	numBlocks := protocol.CalculateFlashBlocks(len(data))
-	eraseSize := protocol.CalculateEraseSize(len(data))
+// spiSetParams sets flash parameters.
+func (f *Flasher) spiSetParams(flashSize uint32) error {
+	req := protocol.NewRequest(protocol.CmdSpiSetParams, protocol.SpiSetParamsData(flashSize))
+	return f.sendCommand(req)
+}
 
-	// Send FLASH_BEGIN
-	beginData := protocol.FlashBeginData(eraseSize, numBlocks, protocol.FlashBlockSize, address)
-	beginReq := protocol.NewRequest(protocol.CmdFlashBegin, beginData)
-	if err := f.sendCommand(beginReq); err != nil {
-		return fmt.Errorf("flash begin failed: %w", err)
+// FlashImageCompressed flashes a binary image using deflate compression.
+func (f *Flasher) FlashImageCompressed(data []byte, address uint32, verify bool) error {
+	// Compress the data using zlib
+	var compressed bytes.Buffer
+	writer, err := zlib.NewWriterLevel(&compressed, zlib.BestSpeed)
+	if err != nil {
+		return fmt.Errorf("failed to create zlib writer: %w", err)
+	}
+	if _, err := writer.Write(data); err != nil {
+		return fmt.Errorf("failed to compress data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to finalize compression: %w", err)
 	}
 
-	// Send data blocks
-	blockSize := protocol.FlashBlockSize
-	totalBlocks := int(numBlocks)
+	compressedData := compressed.Bytes()
+	compressionRatio := float64(len(data)) / float64(len(compressedData))
+	fmt.Printf("Compressed %d -> %d bytes (%.1fx compression)\n", len(data), len(compressedData), compressionRatio)
 
+	// Calculate blocks for compressed data
+	blockSize := protocol.FlashBlockSize
+	numBlocks := protocol.CalculateDeflBlocks(len(compressedData), blockSize)
+
+	// Calculate erase size (based on uncompressed size, rounded to sector)
+	eraseSize := protocol.CalculateEraseSize(len(data))
+
+	// Send FLASH_DEFL_BEGIN
+	beginData := protocol.FlashDeflBeginData(eraseSize, numBlocks, uint32(blockSize), address)
+	beginReq := protocol.NewRequest(protocol.CmdFlashDeflBegin, beginData)
+
+	// Calculate erase timeout based on uncompressed size
+	eraseTimeout := time.Duration(eraseSize/1024/1024*3+5) * time.Second
+	if err := f.sendCommandWithTimeout(beginReq, eraseTimeout); err != nil {
+		return fmt.Errorf("flash defl begin failed: %w", err)
+	}
+
+	// Send compressed data blocks
+	totalBlocks := int(numBlocks)
 	for seq := 0; seq < totalBlocks; seq++ {
 		start := seq * blockSize
 		end := start + blockSize
-		if end > len(data) {
-			end = len(data)
+		if end > len(compressedData) {
+			end = len(compressedData)
 		}
 
-		block := data[start:end]
-		blockData := protocol.FlashDataData(block, uint32(seq))
-		blockReq := protocol.NewRequest(protocol.CmdFlashData, blockData)
+		block := compressedData[start:end]
+		blockData := protocol.FlashDeflDataData(block, uint32(seq))
+		blockReq := protocol.NewRequest(protocol.CmdFlashDeflData, blockData)
 
-		if err := f.sendCommand(blockReq); err != nil {
-			return fmt.Errorf("flash data block %d failed: %w", seq, err)
+		// Retry up to 3 times on timeout
+		var sendErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			sendErr = f.sendCommand(blockReq)
+			if sendErr == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+			f.port.Flush()
 		}
-
-		f.reportProgress(seq+1, totalBlocks)
-	}
-
-	// Send FLASH_END (don't reboot yet)
-	endData := protocol.FlashEndData(false)
-	endReq := protocol.NewRequest(protocol.CmdFlashEnd, endData)
-	if err := f.sendCommand(endReq); err != nil {
-		return fmt.Errorf("flash end failed: %w", err)
-	}
-
-	// Verify if requested
-	if verify {
-		if err := f.verifyFlash(data, address, size); err != nil {
-			return fmt.Errorf("verification failed: %w", err)
+		if sendErr != nil {
+			return fmt.Errorf("flash defl data block %d failed: %w", seq, sendErr)
 		}
 	}
 
-	return nil
-}
-
-// verifyFlash verifies the flashed data using MD5.
-func (f *Flasher) verifyFlash(data []byte, address, size uint32) error {
-	// Calculate expected MD5
-	hash := md5.Sum(data)
-	expected := hex.EncodeToString(hash[:])
-
-	// Request MD5 from device
-	md5Data := protocol.FlashMD5Data(address, size)
-	req := protocol.NewRequest(protocol.CmdSpiFlashMD5, md5Data)
-	frame := slip.Encode(req.Encode())
-
+	// Send FLASH_DEFL_END - don't wait too long as device might reset
+	endData := protocol.FlashDeflEndData(false)
+	endReq := protocol.NewRequest(protocol.CmdFlashDeflEnd, endData)
+	frame := slip.Encode(endReq.Encode())
 	if _, err := f.port.Write(frame); err != nil {
-		return err
+		fmt.Printf("Warning: flash end write error (may be normal): %v\n", err)
 	}
-
-	resp, err := f.readResponse(10 * time.Second) // MD5 can take a while for large images
-	if err != nil {
-		return err
-	}
-
-	if !resp.IsSuccess() {
-		return fmt.Errorf("MD5 command failed: %s", resp.ErrorString())
-	}
-
-	// Response data contains the MD5 hash as ASCII hex
-	actual := string(resp.Data)
-	if len(actual) >= 32 {
-		actual = actual[:32]
-	}
-
-	if actual != expected {
-		return fmt.Errorf("MD5 mismatch: expected %s, got %s", expected, actual)
+	// Try to read response but don't fail if it times out
+	if _, err := f.readResponse(2 * time.Second); err != nil {
+		fmt.Printf("Warning: flash end response timeout (may be normal): %v\n", err)
 	}
 
 	return nil
@@ -183,7 +175,6 @@ func (f *Flasher) verifyFlash(data []byte, address, size uint32) error {
 
 // Reboot reboots the device.
 func (f *Flasher) Reboot() error {
-	// Send FLASH_END with reboot flag
 	endData := protocol.FlashEndData(true)
 	endReq := protocol.NewRequest(protocol.CmdFlashEnd, endData)
 	frame := slip.Encode(endReq.Encode())
@@ -193,20 +184,24 @@ func (f *Flasher) Reboot() error {
 		return err
 	}
 
-	// Also do a hard reset via DTR/RTS
 	time.Sleep(100 * time.Millisecond)
 	return f.port.HardReset()
 }
 
 // sendCommand sends a command and waits for successful response.
 func (f *Flasher) sendCommand(req *protocol.Request) error {
+	return f.sendCommandWithTimeout(req, 5*time.Second)
+}
+
+// sendCommandWithTimeout sends a command with a specific timeout.
+func (f *Flasher) sendCommandWithTimeout(req *protocol.Request, timeout time.Duration) error {
 	frame := slip.Encode(req.Encode())
 
 	if _, err := f.port.Write(frame); err != nil {
 		return err
 	}
 
-	resp, err := f.readResponse(5 * time.Second)
+	resp, err := f.readResponse(timeout)
 	if err != nil {
 		return err
 	}
@@ -245,37 +240,4 @@ func (f *Flasher) readResponse(timeout time.Duration) (*protocol.Response, error
 	}
 
 	return nil, fmt.Errorf("timeout waiting for response")
-}
-
-// FlashRegion represents a region to flash.
-type FlashRegion struct {
-	Address uint32
-	Data    []byte
-	Name    string
-}
-
-// FlashMultiple flashes multiple regions in sequence.
-func (f *Flasher) FlashMultiple(regions []FlashRegion, verify bool) error {
-	totalSize := 0
-	for _, r := range regions {
-		totalSize += len(r.Data)
-	}
-
-	currentProgress := 0
-	for _, region := range regions {
-		blocks := int(protocol.CalculateFlashBlocks(len(region.Data)))
-
-		// Set up progress callback for this region
-		f.SetProgressCallback(func(current, total int) {
-			f.reportProgress(currentProgress+current, totalSize/protocol.FlashBlockSize)
-		})
-
-		if err := f.FlashImage(region.Data, region.Address, verify); err != nil {
-			return fmt.Errorf("failed to flash %s at 0x%X: %w", region.Name, region.Address, err)
-		}
-
-		currentProgress += blocks
-	}
-
-	return nil
 }

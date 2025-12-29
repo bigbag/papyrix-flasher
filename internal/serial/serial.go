@@ -2,6 +2,7 @@ package serial
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 
 	"go.bug.st/serial"
@@ -10,12 +11,27 @@ import (
 // Port wraps a serial port with ESP32-specific functionality.
 type Port struct {
 	port     serial.Port
+	raw      *RawPort // Used on Linux for better USB CDC handling
 	portName string
 	baudRate int
 }
 
 // Open opens a serial port with the specified baud rate.
 func Open(portName string, baudRate int) (*Port, error) {
+	// On Linux, use raw syscalls for better USB CDC compatibility
+	if runtime.GOOS == "linux" {
+		raw, err := OpenRaw(portName, baudRate)
+		if err != nil {
+			return nil, err
+		}
+		return &Port{
+			raw:      raw,
+			portName: portName,
+			baudRate: baudRate,
+		}, nil
+	}
+
+	// On other platforms, use go.bug.st/serial
 	mode := &serial.Mode{
 		BaudRate: baudRate,
 		DataBits: 8,
@@ -43,6 +59,9 @@ func Open(portName string, baudRate int) (*Port, error) {
 
 // Close closes the serial port.
 func (p *Port) Close() error {
+	if p.raw != nil {
+		return p.raw.Close()
+	}
 	if p.port != nil {
 		return p.port.Close()
 	}
@@ -51,16 +70,25 @@ func (p *Port) Close() error {
 
 // Write writes data to the serial port.
 func (p *Port) Write(data []byte) (int, error) {
+	if p.raw != nil {
+		return p.raw.Write(data)
+	}
 	return p.port.Write(data)
 }
 
 // Read reads data from the serial port.
 func (p *Port) Read(buf []byte) (int, error) {
+	if p.raw != nil {
+		return p.raw.Read(buf)
+	}
 	return p.port.Read(buf)
 }
 
 // ReadWithTimeout reads data with a specific timeout.
 func (p *Port) ReadWithTimeout(buf []byte, timeout time.Duration) (int, error) {
+	if p.raw != nil {
+		return p.raw.ReadWithTimeout(buf, timeout)
+	}
 	if err := p.port.SetReadTimeout(timeout); err != nil {
 		return 0, err
 	}
@@ -71,16 +99,12 @@ func (p *Port) ReadWithTimeout(buf []byte, timeout time.Duration) (int, error) {
 
 // ReadAll reads all available data with a timeout.
 func (p *Port) ReadAll(timeout time.Duration) ([]byte, error) {
-	if err := p.port.SetReadTimeout(timeout); err != nil {
-		return nil, err
-	}
-
 	var result []byte
 	buf := make([]byte, 1024)
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		n, err := p.port.Read(buf)
+		n, err := p.ReadWithTimeout(buf, 100*time.Millisecond)
 		if n > 0 {
 			result = append(result, buf[:n]...)
 		}
@@ -97,22 +121,35 @@ func (p *Port) ReadAll(timeout time.Duration) ([]byte, error) {
 
 // Flush discards any buffered data.
 func (p *Port) Flush() error {
+	if p.raw != nil {
+		return p.raw.Flush()
+	}
 	return p.port.ResetInputBuffer()
 }
 
 // SetDTR sets the DTR signal.
 func (p *Port) SetDTR(value bool) error {
+	if p.raw != nil {
+		return p.raw.SetDTR(value)
+	}
 	return p.port.SetDTR(value)
 }
 
 // SetRTS sets the RTS signal.
 func (p *Port) SetRTS(value bool) error {
+	if p.raw != nil {
+		return p.raw.SetRTS(value)
+	}
 	return p.port.SetRTS(value)
 }
 
 // ResetToBootloader resets the ESP32 into bootloader mode using DTR/RTS.
 // This uses the common auto-reset circuit used on most ESP32 dev boards.
 func (p *Port) ResetToBootloader() error {
+	if p.raw != nil {
+		return p.raw.ResetToBootloader()
+	}
+
 	// Classic reset sequence:
 	// 1. RTS high, DTR low -> EN low (reset), GPIO0 high
 	// 2. RTS low, DTR high -> EN high (run), GPIO0 low (boot mode)
@@ -164,6 +201,10 @@ func (p *Port) ResetToBootloader() error {
 
 // HardReset performs a hard reset (without entering bootloader).
 func (p *Port) HardReset() error {
+	if p.raw != nil {
+		return p.raw.HardReset()
+	}
+
 	// Pull EN low then release
 	if err := p.SetRTS(true); err != nil {
 		return err

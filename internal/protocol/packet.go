@@ -32,7 +32,6 @@ func NewRequest(cmd byte, data []byte) *Request {
 }
 
 // calculateChecksum computes the checksum for the request data.
-// Checksum is XOR of all data bytes.
 func (r *Request) calculateChecksum() uint32 {
 	var checksum byte = 0xEF
 	for _, b := range r.Data {
@@ -43,13 +42,6 @@ func (r *Request) calculateChecksum() uint32 {
 
 // Encode serializes the request to bytes (before SLIP encoding).
 func (r *Request) Encode() []byte {
-	// Packet format:
-	// 0: direction (0x00 = request)
-	// 1: command
-	// 2-3: data size (little-endian)
-	// 4-7: checksum (little-endian, only for data commands)
-	// 8+: data
-
 	size := uint16(len(r.Data))
 	packet := make([]byte, 8+len(r.Data))
 
@@ -64,7 +56,6 @@ func (r *Request) Encode() []byte {
 
 // DecodeResponse parses a response from raw bytes (after SLIP decoding).
 func DecodeResponse(data []byte) (*Response, error) {
-	// Minimum response is 8 bytes header + 2 bytes status
 	if len(data) < 10 {
 		return nil, fmt.Errorf("response too short: %d bytes", len(data))
 	}
@@ -80,13 +71,11 @@ func DecodeResponse(data []byte) (*Response, error) {
 	dataSize := binary.LittleEndian.Uint16(data[2:4])
 	resp.Value = binary.LittleEndian.Uint32(data[4:8])
 
-	// Response data follows header
 	if int(dataSize) > len(data)-8 {
 		return nil, fmt.Errorf("data size mismatch: expected %d, have %d", dataSize, len(data)-8)
 	}
 
 	if dataSize >= 2 {
-		// Last two bytes are status and error
 		resp.Data = data[8 : 8+dataSize-2]
 		resp.Status = data[8+dataSize-2]
 		resp.Error = data[8+dataSize-1]
@@ -112,7 +101,6 @@ func (r *Response) ErrorString() string {
 
 // SyncData returns the data payload for a SYNC command.
 func SyncData() []byte {
-	// SYNC payload: 0x07 0x07 0x12 0x20 followed by 32 bytes of 0x55
 	data := make([]byte, 36)
 	data[0] = 0x07
 	data[1] = 0x07
@@ -124,63 +112,87 @@ func SyncData() []byte {
 	return data
 }
 
-// FlashBeginData creates the data payload for FLASH_BEGIN command.
-func FlashBeginData(size, numBlocks, blockSize, offset uint32) []byte {
+// FlashEndData creates the data payload for FLASH_END command.
+func FlashEndData(reboot bool) []byte {
+	data := make([]byte, 4)
+	if reboot {
+		binary.LittleEndian.PutUint32(data, 0)
+	} else {
+		binary.LittleEndian.PutUint32(data, 1)
+	}
+	return data
+}
+
+// SpiAttachData creates the data payload for SPI_ATTACH command.
+func SpiAttachData() []byte {
+	return make([]byte, 8)
+}
+
+// SpiSetParamsData creates the data payload for SPI_SET_PARAMS command.
+func SpiSetParamsData(totalSize uint32) []byte {
+	data := make([]byte, 24)
+	binary.LittleEndian.PutUint32(data[0:4], 0)
+	binary.LittleEndian.PutUint32(data[4:8], totalSize)
+	binary.LittleEndian.PutUint32(data[8:12], 0x10000) // block size (64KB)
+	binary.LittleEndian.PutUint32(data[12:16], 0x1000) // sector size (4KB)
+	binary.LittleEndian.PutUint32(data[16:20], 0x100)  // page size (256 bytes)
+	binary.LittleEndian.PutUint32(data[20:24], 0xFFFF) // status mask
+	return data
+}
+
+// FlashDeflBeginData creates the data payload for FLASH_DEFL_BEGIN command.
+func FlashDeflBeginData(eraseSize, numBlocks, blockSize, offset uint32) []byte {
 	data := make([]byte, 16)
-	binary.LittleEndian.PutUint32(data[0:4], size)
+	binary.LittleEndian.PutUint32(data[0:4], eraseSize)
 	binary.LittleEndian.PutUint32(data[4:8], numBlocks)
 	binary.LittleEndian.PutUint32(data[8:12], blockSize)
 	binary.LittleEndian.PutUint32(data[12:16], offset)
 	return data
 }
 
-// FlashDataData creates the data payload for FLASH_DATA command.
-func FlashDataData(data []byte, seq uint32) []byte {
-	// Pad data to block size if needed
-	blockSize := FlashBlockSize
-	if len(data) < blockSize {
-		padded := make([]byte, blockSize)
-		copy(padded, data)
-		for i := len(data); i < blockSize; i++ {
-			padded[i] = 0xFF
-		}
-		data = padded
-	}
-
-	// Header: size (4) + seq (4) + reserved (8)
-	payload := make([]byte, 16+len(data))
-	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(data)))
+// FlashDeflDataData creates the data payload for FLASH_DEFL_DATA command.
+func FlashDeflDataData(compressedData []byte, seq uint32) []byte {
+	payload := make([]byte, 16+len(compressedData))
+	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(compressedData)))
 	binary.LittleEndian.PutUint32(payload[4:8], seq)
 	binary.LittleEndian.PutUint32(payload[8:12], 0)
 	binary.LittleEndian.PutUint32(payload[12:16], 0)
-	copy(payload[16:], data)
-
+	copy(payload[16:], compressedData)
 	return payload
 }
 
-// FlashEndData creates the data payload for FLASH_END command.
-func FlashEndData(reboot bool) []byte {
+// FlashDeflEndData creates the data payload for FLASH_DEFL_END command.
+func FlashDeflEndData(reboot bool) []byte {
 	data := make([]byte, 4)
 	if reboot {
-		binary.LittleEndian.PutUint32(data, 0) // 0 = reboot
+		binary.LittleEndian.PutUint32(data, 0)
 	} else {
-		binary.LittleEndian.PutUint32(data, 1) // 1 = stay in bootloader
+		binary.LittleEndian.PutUint32(data, 1)
 	}
 	return data
 }
 
-// FlashMD5Data creates the data payload for SPI_FLASH_MD5 command.
-func FlashMD5Data(address, size uint32) []byte {
-	data := make([]byte, 16)
-	binary.LittleEndian.PutUint32(data[0:4], address)
-	binary.LittleEndian.PutUint32(data[4:8], size)
-	binary.LittleEndian.PutUint32(data[8:12], 0)
-	binary.LittleEndian.PutUint32(data[12:16], 0)
-	return data
+// CalculateDeflBlocks calculates the number of compressed blocks.
+func CalculateDeflBlocks(compressedLen, blockSize int) uint32 {
+	return uint32((compressedLen + blockSize - 1) / blockSize)
 }
 
-// SpiAttachData creates the data payload for SPI_ATTACH command.
-func SpiAttachData() []byte {
-	// For ESP32-C3: all zeros means use default SPI configuration
-	return make([]byte, 8)
+// CalculateEraseSize calculates the erase size rounded to sector boundary.
+func CalculateEraseSize(dataLen int) uint32 {
+	return uint32((dataLen + FlashSectorSize - 1) / FlashSectorSize * FlashSectorSize)
+}
+
+// ESP32C3Info contains chip information.
+type ESP32C3Info struct {
+	ChipID uint32
+}
+
+// ParseSecurityInfo parses the response from GET_SECURITY_INFO command.
+func ParseSecurityInfo(data []byte) (*ESP32C3Info, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("security info too short: %d bytes", len(data))
+	}
+	return &ESP32C3Info{
+		ChipID: binary.LittleEndian.Uint32(data[0:4]),
+	}, nil
 }

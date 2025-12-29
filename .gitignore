@@ -15,3 +15,7 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
+.venv
+.idea
+CLAUDE.md
+.claude/

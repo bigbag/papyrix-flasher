@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact: papyrix-flasher-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            artifact: papyrix-flasher-linux-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact: papyrix-flasher-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact: papyrix-flasher-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact: papyrix-flasher-windows-amd64.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ARTIFACT: ${{ matrix.artifact }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          go build -ldflags "-X main.version=${COMMIT_SHA} -X main.commit=${COMMIT_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "${ARTIFACT}" ./cmd/papyrix-flasher
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Run go vet
+        run: go vet ./...
