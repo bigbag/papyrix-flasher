@@ -3,7 +3,7 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
-.PHONY: build build-all clean test fmt lint release help
+.PHONY: build build-all clean test fmt lint release tag help
 
 .DEFAULT_GOAL := help
 
@@ -45,6 +45,17 @@ release: build-all ## Create release archives
 	cd bin && tar czf ../release/papyrix-flasher-$(VERSION)-darwin-amd64.tar.gz papyrix-flasher-darwin-amd64
 	cd bin && tar czf ../release/papyrix-flasher-$(VERSION)-darwin-arm64.tar.gz papyrix-flasher-darwin-arm64
 	cd bin && zip ../release/papyrix-flasher-$(VERSION)-windows-amd64.zip papyrix-flasher-windows-amd64.exe
+
+tag: ## Create and push a version tag (triggers GitHub release)
+	@read -p "Enter tag version (e.g., 1.0.0): " TAG; \
+	if [[ $$TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$$ ]]; then \
+		git tag -a v$$TAG -m "v$$TAG"; \
+		git push origin v$$TAG; \
+		echo "Tag v$$TAG created and pushed successfully."; \
+	else \
+		echo "Invalid tag format. Please use X.Y.Z (e.g., 1.0.0)"; \
+		exit 1; \
+	fi
 
 ## Maintenance:
 

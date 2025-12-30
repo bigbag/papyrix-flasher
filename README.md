@@ -1,6 +1,6 @@
 # Papyrix Flasher
 
-A cross-platform command-line tool for flashing [Papyrix](https://github.com/bigbag/papyrix-reader) firmware to Xteink X4 e-paper reader devices (ESP32-C3).
+A cross-platform command-line tool for flashing firmware to Xteink X4 e-paper reader devices (ESP32-C3). Works with any ESP32-C3 compatible firmware, including [Papyrix](https://github.com/bigbag/papyrix-reader) and [CrossPoint Reader](https://github.com/daveallie/crosspoint-reader).
 
 ## Features
 
@@ -177,6 +177,9 @@ make build-all
 
 # Update embedded binaries from papyrix-reader
 make update-embedded
+
+# Create and push a release tag (triggers GitHub release workflow)
+make tag
 ```
 
 ### Testing
