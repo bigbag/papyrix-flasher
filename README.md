@@ -1,5 +1,9 @@
 # Papyrix Flasher
 
+[![Build](https://github.com/bigbag/papyrix-flasher/workflows/Build/badge.svg)](https://github.com/bigbag/papyrix-flasher/actions?query=workflow%3ABuild)
+[![Go](https://img.shields.io/badge/go-1.22-blue.svg)](https://github.com/bigbag/papyrix-flasher)
+[![license](https://img.shields.io/github/license/bigbag/papyrix-flasher.svg)](https://github.com/bigbag/papyrix-flasher/blob/main/LICENSE)
+
 A cross-platform command-line tool for flashing firmware to Xteink X4 e-paper reader devices (ESP32-C3). Works with any ESP32-C3 compatible firmware, including [Papyrix](https://github.com/bigbag/papyrix-reader) and [CrossPoint Reader](https://github.com/daveallie/crosspoint-reader).
 
 ## Features
