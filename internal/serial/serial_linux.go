@@ -106,10 +106,11 @@ type termios struct {
 
 // RawPort is a serial port using raw syscalls
 type RawPort struct {
-	fd       int
-	file     *os.File
-	portName string
-	baudRate int
+	fd           int
+	file         *os.File
+	portName     string
+	baudRate     int
+	currentVtime uint8 // cached VTIME to avoid redundant ioctl calls
 }
 
 // OpenRaw opens a serial port using raw syscalls
@@ -178,7 +179,16 @@ func (p *RawPort) configure() error {
 		return fmt.Errorf("tcsetattr failed: %v", errno)
 	}
 
+	p.currentVtime = 1
+
 	return nil
+}
+
+// SetBaudRate changes the baud rate of the serial port.
+func (p *RawPort) SetBaudRate(baud int) error {
+	p.baudRate = baud
+	p.currentVtime = 0 // force re-set on next read
+	return p.configure()
 }
 
 // Close closes the serial port
@@ -217,7 +227,6 @@ func (p *RawPort) Read(buf []byte) (int, error) {
 
 // ReadWithTimeout reads data with a specific timeout
 func (p *RawPort) ReadWithTimeout(buf []byte, timeout time.Duration) (int, error) {
-	// Set VTIME based on timeout (in 0.1 second units)
 	vtime := int(timeout.Milliseconds() / 100)
 	if vtime < 1 {
 		vtime = 1
@@ -226,24 +235,20 @@ func (p *RawPort) ReadWithTimeout(buf []byte, timeout time.Duration) (int, error
 		vtime = 255
 	}
 
-	var t termios
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCGETS, uintptr(unsafe.Pointer(&t))); errno != 0 {
-		return 0, errno
-	}
-
-	oldVtime := t.Cc[VTIME]
-	t.Cc[VTIME] = uint8(vtime)
-
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCSETSW, uintptr(unsafe.Pointer(&t))); errno != 0 {
-		return 0, errno
+	newVtime := uint8(vtime)
+	if newVtime != p.currentVtime {
+		var t termios
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCGETS, uintptr(unsafe.Pointer(&t))); errno != 0 {
+			return 0, errno
+		}
+		t.Cc[VTIME] = newVtime
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCSETSW, uintptr(unsafe.Pointer(&t))); errno != 0 {
+			return 0, errno
+		}
+		p.currentVtime = newVtime
 	}
 
 	n, err := syscall.Read(p.fd, buf)
-
-	// Restore VTIME
-	t.Cc[VTIME] = oldVtime
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCSETSW, uintptr(unsafe.Pointer(&t)))
-
 	return n, err
 }
 

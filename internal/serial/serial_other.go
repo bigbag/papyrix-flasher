@@ -17,6 +17,11 @@ func OpenRaw(portName string, baudRate int) (*RawPort, error) {
 	return nil, errors.New("raw serial port not supported on this platform")
 }
 
+// SetBaudRate is a stub - never called on non-Linux platforms.
+func (p *RawPort) SetBaudRate(baud int) error {
+	return errors.New("raw serial port not supported on this platform")
+}
+
 // Close is a stub - never called on non-Linux platforms.
 func (p *RawPort) Close() error {
 	return errors.New("raw serial port not supported on this platform")

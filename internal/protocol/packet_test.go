@@ -7,43 +7,53 @@ import (
 	"testing"
 )
 
-func TestNewRequest_Checksum_EmptyData(t *testing.T) {
+func TestNewRequest_Checksum_Zero(t *testing.T) {
+	// NewRequest always uses checksum=0 (non-data commands don't use checksum)
 	req := NewRequest(CmdSync, nil)
-	// Checksum with no data should be 0xEF (initial value)
+	if req.Checksum != 0 {
+		t.Errorf("NewRequest checksum = 0x%X, want 0", req.Checksum)
+	}
+
+	req2 := NewRequest(CmdSync, []byte{0x01, 0x02, 0x03})
+	if req2.Checksum != 0 {
+		t.Errorf("NewRequest checksum = 0x%X, want 0", req2.Checksum)
+	}
+}
+
+func TestNewDataRequest_Checksum(t *testing.T) {
+	// NewDataRequest checksums only the raw payload, not the full data
+	payload := []byte{0x01, 0x02, 0x03}
+	header := make([]byte, 16)
+	fullData := append(header, payload...)
+
+	req := NewDataRequest(CmdMemData, fullData, payload)
+
+	// Expected: 0xEF ^ 0x01 ^ 0x02 ^ 0x03
+	expected := uint32(byte(0xEF) ^ 0x01 ^ 0x02 ^ 0x03)
+	if req.Checksum != expected {
+		t.Errorf("NewDataRequest checksum = 0x%X, want 0x%X", req.Checksum, expected)
+	}
+}
+
+func TestNewDataRequest_Checksum_SingleByte(t *testing.T) {
+	payload := []byte{0xFF}
+	fullData := append(make([]byte, 16), payload...)
+
+	req := NewDataRequest(CmdMemData, fullData, payload)
+
+	expected := uint32(byte(0xEF) ^ 0xFF)
+	if req.Checksum != expected {
+		t.Errorf("NewDataRequest checksum = 0x%X, want 0x%X", req.Checksum, expected)
+	}
+}
+
+func TestNewDataRequest_Checksum_EmptyPayload(t *testing.T) {
+	fullData := make([]byte, 16)
+	req := NewDataRequest(CmdMemData, fullData, nil)
+
+	// Empty payload: checksum should be just the seed 0xEF
 	if req.Checksum != 0xEF {
-		t.Errorf("NewRequest checksum with empty data = 0x%X, want 0xEF", req.Checksum)
-	}
-}
-
-func TestNewRequest_Checksum_SingleByte(t *testing.T) {
-	// Checksum = 0xEF ^ 0x01 = 0xEE
-	req := NewRequest(CmdSync, []byte{0x01})
-	if req.Checksum != 0xEE {
-		t.Errorf("NewRequest checksum = 0x%X, want 0xEE", req.Checksum)
-	}
-}
-
-func TestNewRequest_Checksum_MultipleBytes(t *testing.T) {
-	// 0xEF ^ 0x01 ^ 0x02 ^ 0x03 = 0xEF ^ 0x00 = 0xEF (0x01^0x02^0x03 = 0)
-	req := NewRequest(CmdSync, []byte{0x01, 0x02, 0x03})
-	expected := byte(0xEF) ^ 0x01 ^ 0x02 ^ 0x03
-	if req.Checksum != uint32(expected) {
-		t.Errorf("NewRequest checksum = 0x%X, want 0x%X", req.Checksum, expected)
-	}
-}
-
-func TestNewRequest_Checksum_SyncData(t *testing.T) {
-	syncData := SyncData()
-	req := NewRequest(CmdSync, syncData)
-
-	// Calculate expected checksum manually
-	var expected byte = 0xEF
-	for _, b := range syncData {
-		expected ^= b
-	}
-
-	if req.Checksum != uint32(expected) {
-		t.Errorf("NewRequest checksum for SyncData = 0x%X, want 0x%X", req.Checksum, expected)
+		t.Errorf("NewDataRequest checksum with empty payload = 0x%X, want 0xEF", req.Checksum)
 	}
 }
 

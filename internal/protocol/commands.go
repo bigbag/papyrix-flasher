@@ -3,9 +3,15 @@ package protocol
 // ESP32 ROM bootloader commands
 const (
 	CmdFlashEnd        = 0x04
+	CmdMemBegin        = 0x05
+	CmdMemEnd          = 0x06
+	CmdMemData         = 0x07
 	CmdSync            = 0x08
+	CmdWriteReg        = 0x09
+	CmdReadReg         = 0x0A
 	CmdSpiSetParams    = 0x0B
 	CmdSpiAttach       = 0x0D
+	CmdChangeBaudrate  = 0x0F
 	CmdFlashDeflBegin  = 0x10
 	CmdFlashDeflData   = 0x11
 	CmdFlashDeflEnd    = 0x12
@@ -20,8 +26,10 @@ const (
 
 // Flash parameters
 const (
-	FlashBlockSize  = 0x400  // 1KB blocks
-	FlashSectorSize = 0x1000 // 4KB sectors
+	FlashBlockSize     = 0x400  // 1KB blocks (ROM bootloader)
+	FlashSectorSize    = 0x1000 // 4KB sectors
+	StubFlashWriteSize = 0x4000 // 16KB blocks when stub is running
+	MemBlockSize       = 0x1800 // 6KB blocks for RAM upload
 )
 
 // Chip IDs
@@ -71,3 +79,17 @@ func ErrorMessage(code byte) string {
 		return "unknown error"
 	}
 }
+
+// ESP32-C3 register addresses for watchdog control (USB-JTAG/Serial)
+const (
+	UartdevBufNo             = 0x3FCDF07C // ROM .bss variable indicating active port
+	UartdevBufNoUSBJTAG      = 3          // Value when USB-JTAG/Serial is active
+	RTCCntlBaseReg           = 0x60008000
+	RTCCntlWdtConfig0Reg     = RTCCntlBaseReg + 0x0090
+	RTCCntlWdtWprotectReg    = RTCCntlBaseReg + 0x00A8
+	RTCCntlWdtWkey           = 0x50D83AA1
+	RTCCntlSwdConfReg        = RTCCntlBaseReg + 0x00AC
+	RTCCntlSwdAutoFeedEn     = 1 << 31
+	RTCCntlSwdWprotectReg    = RTCCntlBaseReg + 0x00B0
+	RTCCntlSwdWkey           = 0x8F1D312A
+)

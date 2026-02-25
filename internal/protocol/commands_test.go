@@ -271,6 +271,11 @@ func TestCalculateDeflBlocks_Remainder(t *testing.T) {
 		{1025, 1024, 2},
 		{2049, 1024, 3},
 		{1023, 1024, 1},
+		// StubFlashWriteSize (16KB) block size
+		{StubFlashWriteSize, StubFlashWriteSize, 1},
+		{StubFlashWriteSize + 1, StubFlashWriteSize, 2},
+		{StubFlashWriteSize * 3, StubFlashWriteSize, 3},
+		{1, StubFlashWriteSize, 1},
 	}
 
 	for _, tc := range tests {
@@ -368,13 +373,187 @@ func TestParseSecurityInfo_TooShort(t *testing.T) {
 	}
 }
 
+func TestMemBeginData(t *testing.T) {
+	totalSize := uint32(3736)
+	numBlocks := uint32(1)
+	blockSize := uint32(0x1800)
+	offset := uint32(0x40380000)
+
+	data := MemBeginData(totalSize, numBlocks, blockSize, offset)
+
+	if len(data) != 16 {
+		t.Errorf("MemBeginData() length = %d, want 16", len(data))
+	}
+
+	fields := []struct {
+		off      int
+		expected uint32
+		name     string
+	}{
+		{0, totalSize, "total size"},
+		{4, numBlocks, "num blocks"},
+		{8, blockSize, "block size"},
+		{12, offset, "offset"},
+	}
+
+	for _, f := range fields {
+		value := binary.LittleEndian.Uint32(data[f.off : f.off+4])
+		if value != f.expected {
+			t.Errorf("MemBeginData %s = 0x%X, want 0x%X", f.name, value, f.expected)
+		}
+	}
+}
+
+func TestMemDataData(t *testing.T) {
+	blockData := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	seq := uint32(3)
+
+	data := MemDataData(blockData, seq)
+
+	expectedLen := 16 + len(blockData)
+	if len(data) != expectedLen {
+		t.Errorf("MemDataData() length = %d, want %d", len(data), expectedLen)
+	}
+
+	dataLen := binary.LittleEndian.Uint32(data[0:4])
+	if dataLen != uint32(len(blockData)) {
+		t.Errorf("MemDataData data length = %d, want %d", dataLen, len(blockData))
+	}
+
+	seqNum := binary.LittleEndian.Uint32(data[4:8])
+	if seqNum != seq {
+		t.Errorf("MemDataData seq = %d, want %d", seqNum, seq)
+	}
+
+	for i, b := range blockData {
+		if data[16+i] != b {
+			t.Errorf("MemDataData payload[%d] = 0x%02X, want 0x%02X", i, data[16+i], b)
+		}
+	}
+}
+
+func TestMemEndData(t *testing.T) {
+	data := MemEndData(0, 0x40380620)
+
+	if len(data) != 8 {
+		t.Errorf("MemEndData() length = %d, want 8", len(data))
+	}
+
+	execFlag := binary.LittleEndian.Uint32(data[0:4])
+	if execFlag != 0 {
+		t.Errorf("MemEndData executeFlag = %d, want 0", execFlag)
+	}
+
+	entry := binary.LittleEndian.Uint32(data[4:8])
+	if entry != 0x40380620 {
+		t.Errorf("MemEndData entrypoint = 0x%X, want 0x40380620", entry)
+	}
+}
+
+func TestChangeBaudrateData(t *testing.T) {
+	data := ChangeBaudrateData(921600, 115200)
+
+	if len(data) != 8 {
+		t.Errorf("ChangeBaudrateData() length = %d, want 8", len(data))
+	}
+
+	newBaud := binary.LittleEndian.Uint32(data[0:4])
+	if newBaud != 921600 {
+		t.Errorf("ChangeBaudrateData newBaud = %d, want 921600", newBaud)
+	}
+
+	oldBaud := binary.LittleEndian.Uint32(data[4:8])
+	if oldBaud != 115200 {
+		t.Errorf("ChangeBaudrateData oldBaud = %d, want 115200", oldBaud)
+	}
+}
+
+func TestReadRegData(t *testing.T) {
+	addr := uint32(0x3FCDF07C)
+	data := ReadRegData(addr)
+
+	if len(data) != 4 {
+		t.Errorf("ReadRegData() length = %d, want 4", len(data))
+	}
+
+	value := binary.LittleEndian.Uint32(data[0:4])
+	if value != addr {
+		t.Errorf("ReadRegData addr = 0x%X, want 0x%X", value, addr)
+	}
+}
+
+func TestWriteRegData(t *testing.T) {
+	addr := uint32(0x60008090)
+	value := uint32(0x50D83AA1)
+	mask := uint32(0xFFFFFFFF)
+	delayUs := uint32(100)
+
+	data := WriteRegData(addr, value, mask, delayUs)
+
+	if len(data) != 16 {
+		t.Errorf("WriteRegData() length = %d, want 16", len(data))
+	}
+
+	fields := []struct {
+		off      int
+		expected uint32
+		name     string
+	}{
+		{0, addr, "addr"},
+		{4, value, "value"},
+		{8, mask, "mask"},
+		{12, delayUs, "delayUs"},
+	}
+
+	for _, f := range fields {
+		got := binary.LittleEndian.Uint32(data[f.off : f.off+4])
+		if got != f.expected {
+			t.Errorf("WriteRegData %s = 0x%X, want 0x%X", f.name, got, f.expected)
+		}
+	}
+}
+
+func TestWatchdogConstants(t *testing.T) {
+	// Verify register addresses derived from base 0x60008000 match ESP32-C3 TRM
+	if RTCCntlWdtConfig0Reg != 0x60008090 {
+		t.Errorf("RTCCntlWdtConfig0Reg = 0x%X, want 0x60008090", RTCCntlWdtConfig0Reg)
+	}
+	if RTCCntlWdtWprotectReg != 0x600080A8 {
+		t.Errorf("RTCCntlWdtWprotectReg = 0x%X, want 0x600080A8", RTCCntlWdtWprotectReg)
+	}
+	if RTCCntlSwdConfReg != 0x600080AC {
+		t.Errorf("RTCCntlSwdConfReg = 0x%X, want 0x600080AC", RTCCntlSwdConfReg)
+	}
+	if RTCCntlSwdWprotectReg != 0x600080B0 {
+		t.Errorf("RTCCntlSwdWprotectReg = 0x%X, want 0x600080B0", RTCCntlSwdWprotectReg)
+	}
+	if RTCCntlSwdAutoFeedEn != 1<<31 {
+		t.Errorf("RTCCntlSwdAutoFeedEn = 0x%X, want 0x80000000", RTCCntlSwdAutoFeedEn)
+	}
+	if RTCCntlWdtWkey != 0x50D83AA1 {
+		t.Errorf("RTCCntlWdtWkey = 0x%X, want 0x50D83AA1", RTCCntlWdtWkey)
+	}
+	if RTCCntlSwdWkey != 0x8F1D312A {
+		t.Errorf("RTCCntlSwdWkey = 0x%X, want 0x8F1D312A", RTCCntlSwdWkey)
+	}
+	if UartdevBufNoUSBJTAG != 3 {
+		t.Errorf("UartdevBufNoUSBJTAG = %d, want 3", UartdevBufNoUSBJTAG)
+	}
+}
+
 func TestConstants(t *testing.T) {
 	// Verify command constants are correct
 	commands := map[byte]string{
 		CmdFlashEnd:        "CmdFlashEnd",
+		CmdMemBegin:        "CmdMemBegin",
+		CmdMemEnd:          "CmdMemEnd",
+		CmdMemData:         "CmdMemData",
 		CmdSync:            "CmdSync",
+		CmdWriteReg:        "CmdWriteReg",
+		CmdReadReg:         "CmdReadReg",
 		CmdSpiSetParams:    "CmdSpiSetParams",
 		CmdSpiAttach:       "CmdSpiAttach",
+		CmdChangeBaudrate:  "CmdChangeBaudrate",
 		CmdFlashDeflBegin:  "CmdFlashDeflBegin",
 		CmdFlashDeflData:   "CmdFlashDeflData",
 		CmdFlashDeflEnd:    "CmdFlashDeflEnd",
@@ -383,9 +562,15 @@ func TestConstants(t *testing.T) {
 
 	expected := map[byte]byte{
 		0x04: CmdFlashEnd,
+		0x05: CmdMemBegin,
+		0x06: CmdMemEnd,
+		0x07: CmdMemData,
 		0x08: CmdSync,
+		0x09: CmdWriteReg,
+		0x0A: CmdReadReg,
 		0x0B: CmdSpiSetParams,
 		0x0D: CmdSpiAttach,
+		0x0F: CmdChangeBaudrate,
 		0x10: CmdFlashDeflBegin,
 		0x11: CmdFlashDeflData,
 		0x12: CmdFlashDeflEnd,
@@ -404,5 +589,11 @@ func TestConstants(t *testing.T) {
 	}
 	if FlashSectorSize != 0x1000 {
 		t.Errorf("FlashSectorSize = 0x%X, want 0x1000", FlashSectorSize)
+	}
+	if StubFlashWriteSize != 0x4000 {
+		t.Errorf("StubFlashWriteSize = 0x%X, want 0x4000", StubFlashWriteSize)
+	}
+	if MemBlockSize != 0x1800 {
+		t.Errorf("MemBlockSize = 0x%X, want 0x1800", MemBlockSize)
 	}
 }

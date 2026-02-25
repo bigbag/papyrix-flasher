@@ -21,20 +21,30 @@ type Response struct {
 	Error   byte
 }
 
-// NewRequest creates a new request with calculated checksum.
+// NewRequest creates a new request with checksum=0 (default for non-data commands).
 func NewRequest(cmd byte, data []byte) *Request {
-	r := &Request{
-		Command: cmd,
-		Data:    data,
+	return &Request{
+		Command:  cmd,
+		Data:     data,
+		Checksum: 0,
 	}
-	r.Checksum = r.calculateChecksum()
-	return r
 }
 
-// calculateChecksum computes the checksum for the request data.
-func (r *Request) calculateChecksum() uint32 {
+// NewDataRequest creates a request for data transfer commands (MEM_DATA,
+// FLASH_DATA, FLASH_DEFL_DATA). The checksum covers only the raw payload
+// (matching esptool), not the 16-byte header prepended by the *Data functions.
+func NewDataRequest(cmd byte, data []byte, payload []byte) *Request {
+	return &Request{
+		Command:  cmd,
+		Data:     data,
+		Checksum: xorChecksum(payload),
+	}
+}
+
+// xorChecksum computes the ESP32 bootloader checksum (XOR with magic 0xEF).
+func xorChecksum(data []byte) uint32 {
 	var checksum byte = 0xEF
-	for _, b := range r.Data {
+	for _, b := range data {
 		checksum ^= b
 	}
 	return uint32(checksum)
@@ -169,6 +179,60 @@ func FlashDeflEndData(reboot bool) []byte {
 	} else {
 		binary.LittleEndian.PutUint32(data, 1)
 	}
+	return data
+}
+
+// MemBeginData creates the data payload for MEM_BEGIN command.
+func MemBeginData(totalSize, numBlocks, blockSize, offset uint32) []byte {
+	data := make([]byte, 16)
+	binary.LittleEndian.PutUint32(data[0:4], totalSize)
+	binary.LittleEndian.PutUint32(data[4:8], numBlocks)
+	binary.LittleEndian.PutUint32(data[8:12], blockSize)
+	binary.LittleEndian.PutUint32(data[12:16], offset)
+	return data
+}
+
+// MemDataData creates the data payload for MEM_DATA command.
+func MemDataData(blockData []byte, seq uint32) []byte {
+	payload := make([]byte, 16+len(blockData))
+	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(blockData)))
+	binary.LittleEndian.PutUint32(payload[4:8], seq)
+	binary.LittleEndian.PutUint32(payload[8:12], 0)
+	binary.LittleEndian.PutUint32(payload[12:16], 0)
+	copy(payload[16:], blockData)
+	return payload
+}
+
+// MemEndData creates the data payload for MEM_END command.
+func MemEndData(executeFlag, entrypoint uint32) []byte {
+	data := make([]byte, 8)
+	binary.LittleEndian.PutUint32(data[0:4], executeFlag)
+	binary.LittleEndian.PutUint32(data[4:8], entrypoint)
+	return data
+}
+
+// ReadRegData creates the data payload for READ_REG command.
+func ReadRegData(addr uint32) []byte {
+	data := make([]byte, 4)
+	binary.LittleEndian.PutUint32(data[0:4], addr)
+	return data
+}
+
+// WriteRegData creates the data payload for WRITE_REG command.
+func WriteRegData(addr, value, mask, delayUs uint32) []byte {
+	data := make([]byte, 16)
+	binary.LittleEndian.PutUint32(data[0:4], addr)
+	binary.LittleEndian.PutUint32(data[4:8], value)
+	binary.LittleEndian.PutUint32(data[8:12], mask)
+	binary.LittleEndian.PutUint32(data[12:16], delayUs)
+	return data
+}
+
+// ChangeBaudrateData creates the data payload for CHANGE_BAUDRATE command.
+func ChangeBaudrateData(newBaud, oldBaud uint32) []byte {
+	data := make([]byte, 8)
+	binary.LittleEndian.PutUint32(data[0:4], newBaud)
+	binary.LittleEndian.PutUint32(data[4:8], oldBaud)
 	return data
 }
 

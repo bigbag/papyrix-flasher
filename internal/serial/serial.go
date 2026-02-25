@@ -57,6 +57,23 @@ func Open(portName string, baudRate int) (*Port, error) {
 	}, nil
 }
 
+// SetBaudRate changes the baud rate of the serial port.
+func (p *Port) SetBaudRate(baud int) error {
+	if p.raw != nil {
+		return p.raw.SetBaudRate(baud)
+	}
+	if err := p.port.SetMode(&serial.Mode{
+		BaudRate: baud,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}); err != nil {
+		return err
+	}
+	p.baudRate = baud
+	return nil
+}
+
 // Close closes the serial port.
 func (p *Port) Close() error {
 	if p.raw != nil {

@@ -132,10 +132,10 @@ func runFlash(cmd *cobra.Command, args []string) error {
 	fmt.Println("Rebooting device...")
 	if err := f.Reboot(); err != nil {
 		fmt.Printf("Warning: reboot failed: %v\n", err)
+		fmt.Println("If the device does not start, press the reset button.")
 	}
 
 	fmt.Println("Done!")
-	fmt.Println("\nNote: To start your device, hold the power button and press the reset button.")
 	return nil
 }
 
