@@ -4,6 +4,8 @@ package protocol
 const (
 	BootloaderAddress = 0x0000
 	PartitionsAddress = 0x8000
+	OtaDataAddress    = 0xE000
+	OtaDataSize       = 0x2000
 	FirmwareAddress   = 0x10000
 )
 

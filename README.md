@@ -76,6 +76,7 @@ The Xteink X4 has 16MB of flash memory, organized as:
 
 - **Bootloader** at `0x0000` (~12KB) - ESP32-C3 second-stage bootloader
 - **Partitions** at `0x8000` (3KB) - Partition table
+- **OTA data** at `0xE000` (8KB) - OTA boot state tracking
 - **App (OTA 0)** at `0x10000` (~6.3MB) - Main application
 - **App (OTA 1)** at `0x650000` (~6.3MB) - OTA update partition
 - **SPIFFS** at `0xC90000` (~3.3MB) - File storage
@@ -83,6 +84,7 @@ The Xteink X4 has 16MB of flash memory, organized as:
 By default, `papyrix-flasher` writes to:
 - Bootloader at 0x0000 (embedded in tool)
 - Partition table at 0x8000 (embedded in tool)
+- OTA data at 0xE000 (erased to reset boot state)
 - Firmware at 0x10000 (your file)
 
 ## How It Works

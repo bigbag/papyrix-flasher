@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
@@ -108,6 +109,11 @@ func runFlash(cmd *cobra.Command, args []string) error {
 				Address: protocol.PartitionsAddress,
 				Data:    embedded.Partitions(),
 				Name:    "partitions",
+			},
+			flasher.FlashRegion{
+				Address: protocol.OtaDataAddress,
+				Data:    bytes.Repeat([]byte{0xFF}, protocol.OtaDataSize),
+				Name:    "otadata",
 			},
 		)
 	}

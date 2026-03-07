@@ -541,6 +541,15 @@ func TestWatchdogConstants(t *testing.T) {
 	}
 }
 
+func TestOtaDataConstants(t *testing.T) {
+	if OtaDataAddress != 0xE000 {
+		t.Errorf("OtaDataAddress = 0x%X, want 0xE000", OtaDataAddress)
+	}
+	if OtaDataSize != 0x2000 {
+		t.Errorf("OtaDataSize = 0x%X, want 0x2000", OtaDataSize)
+	}
+}
+
 func TestConstants(t *testing.T) {
 	// Verify command constants are correct
 	commands := map[byte]string{
