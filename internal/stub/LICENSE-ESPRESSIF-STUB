@@ -1,0 +1,6 @@
+The ESP32-S3 stub in stub_flasher_32s3.json comes from
+pioarduino tool-esptoolpy 5.1.2, stub_flasher/1/esp32s3.json.
+
+That package states that generation-1 binaries are free software under
+the GNU General Public License version 2 or later. Source:
+https://github.com/Jason2866/esptool-legacy-flasher-stub/releases/tag/v1.11.2

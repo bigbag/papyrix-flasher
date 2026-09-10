@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/bigbag/papyrix-flasher/internal/protocol"
 )
 
 //go:embed stub_flasher_32c3.json
-var stubJSON []byte
+var stubC3JSON []byte
+
+//go:embed stub_flasher_32s3.json
+var stubS3JSON []byte
 
 // Stub contains the decoded stub flasher segments.
 type Stub struct {
@@ -29,42 +34,43 @@ type stubFile struct {
 }
 
 var (
-	cachedStub  *Stub
-	cachedErr   error
-	decodeOnce  sync.Once
+	getC3 = sync.OnceValues(func() (*Stub, error) { return decode(stubC3JSON) })
+	getS3 = sync.OnceValues(func() (*Stub, error) { return decode(stubS3JSON) })
 )
 
-// Get returns the decoded ESP32-C3 stub flasher.
-func Get() (*Stub, error) {
-	decodeOnce.Do(func() {
-		var sf stubFile
-		if err := json.Unmarshal(stubJSON, &sf); err != nil {
-			cachedErr = fmt.Errorf("failed to parse stub JSON: %w", err)
-			return
-		}
+// Get returns the decoded stub flasher for chipID.
+func Get(chipID uint32) (*Stub, error) {
+	switch chipID {
+	case protocol.ChipIDESP32C3:
+		return getC3()
+	case protocol.ChipIDESP32S3:
+		return getS3()
+	default:
+		return nil, fmt.Errorf("unsupported stub chip ID: 0x%02X", chipID)
+	}
+}
 
-		text, err := base64.StdEncoding.DecodeString(sf.Text)
-		if err != nil {
-			cachedErr = fmt.Errorf("failed to decode stub text: %w", err)
-			return
-		}
+func decode(stubJSON []byte) (*Stub, error) {
+	var sf stubFile
+	if err := json.Unmarshal(stubJSON, &sf); err != nil {
+		return nil, fmt.Errorf("failed to parse stub JSON: %w", err)
+	}
 
-		var data []byte
-		if sf.Data != "" {
-			data, err = base64.StdEncoding.DecodeString(sf.Data)
-			if err != nil {
-				cachedErr = fmt.Errorf("failed to decode stub data: %w", err)
-				return
-			}
-		}
+	text, err := base64.StdEncoding.DecodeString(sf.Text)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode stub text: %w", err)
+	}
 
-		cachedStub = &Stub{
-			Text:      text,
-			TextStart: sf.TextStart,
-			Data:      data,
-			DataStart: sf.DataStart,
-			Entry:     sf.Entry,
-		}
-	})
-	return cachedStub, cachedErr
+	data, err := base64.StdEncoding.DecodeString(sf.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode stub data: %w", err)
+	}
+
+	return &Stub{
+		Text:      text,
+		TextStart: sf.TextStart,
+		Data:      data,
+		DataStart: sf.DataStart,
+		Entry:     sf.Entry,
+	}, nil
 }

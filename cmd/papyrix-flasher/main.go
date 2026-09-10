@@ -23,7 +23,7 @@ var (
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "papyrix-flasher",
-		Short: "Flash firmware to Xteink X4 (ESP32-C3) devices",
+		Short: "Flash firmware to Xteink X3, X4, and X4 Pro devices",
 	}
 
 	// Flash command
@@ -35,7 +35,7 @@ func main() {
 	}
 	flashCmd.Flags().StringVarP(&portFlag, "port", "p", "", "Serial port (auto-detect if not specified)")
 	flashCmd.Flags().IntVarP(&baudFlag, "baud", "b", protocol.DefaultBaudRate, "Baud rate")
-	flashCmd.Flags().BoolVar(&firmwareOnlyFlag, "firmware-only", false, "Flash firmware only (skip bootloader/partitions)")
+	flashCmd.Flags().BoolVar(&firmwareOnlyFlag, "firmware-only", false, "Flash application only (leave bootloader, partitions, and OTA state unchanged)")
 
 	// Info command
 	infoCmd := &cobra.Command{
@@ -61,6 +61,15 @@ func runFlash(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read firmware file: %w", err)
 	}
+	chipID, err := protocol.ValidateApplication(firmware)
+	if err != nil {
+		return fmt.Errorf("invalid firmware: %w", err)
+	}
+
+	fmt.Printf("Target: %s\n", protocol.ChipName(chipID))
+	if chipID == protocol.ChipIDESP32S3 {
+		fmt.Println("X4 Pro: hold Power throughout flashing until the application starts.")
+	}
 
 	fmt.Printf("Firmware: %s (%d bytes)\n", firmwarePath, len(firmware))
 
@@ -68,7 +77,7 @@ func runFlash(cmd *cobra.Command, args []string) error {
 	portName := portFlag
 	if portName == "" {
 		fmt.Println("Detecting device...")
-		result, err := detect.DetectDevice(baudFlag)
+		result, err := detect.DetectDevice(baudFlag, chipID)
 		if err != nil {
 			return fmt.Errorf("device detection failed: %w", err)
 		}
@@ -90,7 +99,7 @@ func runFlash(cmd *cobra.Command, args []string) error {
 
 	// Connect to bootloader
 	fmt.Println("Connecting to bootloader...")
-	if err := f.Connect(); err != nil {
+	if err := f.Connect(chipID); err != nil {
 		return err
 	}
 	fmt.Println("Connected!")
@@ -99,10 +108,14 @@ func runFlash(cmd *cobra.Command, args []string) error {
 	var regions []flasher.FlashRegion
 
 	if !firmwareOnlyFlag {
+		bootloader, err := embedded.Bootloader(chipID)
+		if err != nil {
+			return err
+		}
 		regions = append(regions,
 			flasher.FlashRegion{
 				Address: protocol.BootloaderAddress,
-				Data:    embedded.Bootloader(),
+				Data:    bootloader,
 				Name:    "bootloader",
 			},
 			flasher.FlashRegion{
@@ -127,7 +140,7 @@ func runFlash(cmd *cobra.Command, args []string) error {
 	// Flash each region using compressed transfer
 	for _, region := range regions {
 		fmt.Printf("Flashing %s at 0x%X (%d bytes)...\n", region.Name, region.Address, len(region.Data))
-		if err := f.FlashImageCompressed(region.Data, region.Address, false); err != nil {
+		if err := f.FlashImageCompressed(region.Data, region.Address); err != nil {
 			return err
 		}
 	}
@@ -146,6 +159,7 @@ func runFlash(cmd *cobra.Command, args []string) error {
 }
 
 func runInfo(cmd *cobra.Command, args []string) error {
+	fmt.Println("X4 Pro: hold Power until device information is shown.")
 	if portFlag != "" {
 		// Check specific port
 		result, err := detect.DetectOnPort(portFlag, baudFlag)

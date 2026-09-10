@@ -151,7 +151,7 @@ func TestDecodeResponse_Valid(t *testing.T) {
 	resp[8] = 0x00 // status
 	resp[9] = 0x00 // error
 
-	decoded, err := DecodeResponse(resp)
+	decoded, err := DecodeResponse(resp, StubStatusBytes)
 	if err != nil {
 		t.Fatalf("DecodeResponse() error = %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDecodeResponse_WithData(t *testing.T) {
 	resp[8+len(extra)] = 0x00   // status
 	resp[8+len(extra)+1] = 0x00 // error
 
-	decoded, err := DecodeResponse(resp)
+	decoded, err := DecodeResponse(resp, StubStatusBytes)
 	if err != nil {
 		t.Fatalf("DecodeResponse() error = %v", err)
 	}
@@ -203,7 +203,7 @@ func TestDecodeResponse_TooShort(t *testing.T) {
 	}
 
 	for _, resp := range shortResponses {
-		_, err := DecodeResponse(resp)
+		_, err := DecodeResponse(resp, StubStatusBytes)
 		if err == nil {
 			t.Errorf("DecodeResponse(%v) expected error, got nil", resp)
 		}
@@ -216,7 +216,7 @@ func TestDecodeResponse_InvalidDirection(t *testing.T) {
 	resp[1] = CmdSync
 	binary.LittleEndian.PutUint16(resp[2:4], 2)
 
-	_, err := DecodeResponse(resp)
+	_, err := DecodeResponse(resp, StubStatusBytes)
 	if err == nil {
 		t.Error("DecodeResponse with wrong direction expected error, got nil")
 	}
@@ -231,7 +231,7 @@ func TestDecodeResponse_DataSizeMismatch(t *testing.T) {
 	resp[1] = CmdSync
 	binary.LittleEndian.PutUint16(resp[2:4], 100) // Claims 100 bytes but only has 2
 
-	_, err := DecodeResponse(resp)
+	_, err := DecodeResponse(resp, StubStatusBytes)
 	if err == nil {
 		t.Error("DecodeResponse with size mismatch expected error, got nil")
 	}
@@ -247,7 +247,7 @@ func TestDecodeResponse_ZeroDataSize(t *testing.T) {
 	binary.LittleEndian.PutUint16(resp[2:4], 0) // No data
 	binary.LittleEndian.PutUint32(resp[4:8], 0x12345678)
 
-	decoded, err := DecodeResponse(resp)
+	decoded, err := DecodeResponse(resp, StubStatusBytes)
 	if err != nil {
 		t.Fatalf("DecodeResponse() error = %v", err)
 	}
@@ -257,6 +257,71 @@ func TestDecodeResponse_ZeroDataSize(t *testing.T) {
 	}
 }
 
+func TestDecodeResponse_RejectsROMFailure(t *testing.T) {
+	// ROM replies carry a 4-byte trailer: status, error, and two reserved bytes.
+	// Decoding must read status/error from the start of the trailer, not from
+	// the reserved tail.
+	resp := []byte{
+		DirResponse, CmdReadReg, 4, 0, // dataSize = 4 (full ROM trailer)
+		0, 0, 0, 0, // value
+		1, 5, // status = 1 (failure), error = 5 (invalid message)
+		0, 0, // reserved
+	}
+
+	decoded, err := DecodeResponse(resp, ROMStatusBytes)
+	if err != nil {
+		t.Fatalf("DecodeResponse() error = %v", err)
+	}
+	if decoded.IsSuccess() {
+		t.Fatal("DecodeResponse() accepted ROM failure as success")
+	}
+	if decoded.Status != 1 {
+		t.Errorf("DecodeResponse() Status = 0x%02X, want 0x01", decoded.Status)
+	}
+	if decoded.Error != 5 {
+		t.Errorf("DecodeResponse() Error = 0x%02X, want 0x05", decoded.Error)
+	}
+}
+
+func TestDecodeResponse_InvalidStatusBytes(t *testing.T) {
+	resp := make([]byte, 10)
+	resp[0] = DirResponse
+	resp[1] = CmdSync
+	binary.LittleEndian.PutUint16(resp[2:4], 2)
+
+	for _, statusBytes := range []int{0, 1, 3, 4 + 1, -2} {
+		_, err := DecodeResponse(resp, statusBytes)
+		if err == nil {
+			t.Errorf("DecodeResponse(statusBytes=%d) expected error, got nil", statusBytes)
+		}
+	}
+}
+
+func TestDecodeResponse_ROMWithData(t *testing.T) {
+	// ROM reply: payload, 4-byte trailer (status, error, reserved pair).
+	payload := []byte{0xAA, 0xBB}
+	dataSize := uint16(len(payload) + ROMStatusBytes)
+
+	resp := make([]byte, 8+int(dataSize))
+	resp[0] = DirResponse
+	resp[1] = CmdGetSecurityInfo
+	binary.LittleEndian.PutUint16(resp[2:4], dataSize)
+	copy(resp[8:], payload)
+	resp[8+len(payload)] = 0x00 // status
+	resp[8+len(payload)+1] = 0x00
+	// remaining two bytes stay zero: reserved
+
+	decoded, err := DecodeResponse(resp, ROMStatusBytes)
+	if err != nil {
+		t.Fatalf("DecodeResponse() error = %v", err)
+	}
+	if !bytes.Equal(decoded.Data, payload) {
+		t.Errorf("DecodeResponse Data = %v, want %v (reserved bytes must stay out of Data)", decoded.Data, payload)
+	}
+	if !decoded.IsSuccess() {
+		t.Errorf("DecodeResponse Status = 0x%02X, Error = 0x%02X, want success", decoded.Status, decoded.Error)
+	}
+}
 func TestResponse_IsSuccess(t *testing.T) {
 	tests := []struct {
 		status   byte

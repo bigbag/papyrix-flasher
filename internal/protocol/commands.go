@@ -35,6 +35,14 @@ const (
 // Chip IDs
 const (
 	ChipIDESP32C3 = 0x05
+	ChipIDESP32S3 = 0x09
+)
+
+// Response status trailer sizes. ROM bootloaders append four bytes
+// (status, error, two reserved); the stub flasher appends only status and error.
+const (
+	ROMStatusBytes  = 4
+	StubStatusBytes = 2
 )
 
 // ChipName returns human-readable name for chip ID
@@ -42,6 +50,8 @@ func ChipName(id uint32) string {
 	switch id {
 	case ChipIDESP32C3:
 		return "ESP32-C3"
+	case ChipIDESP32S3:
+		return "ESP32-S3"
 	default:
 		return "ESP32"
 	}
@@ -82,14 +92,14 @@ func ErrorMessage(code byte) string {
 
 // ESP32-C3 register addresses for watchdog control (USB-JTAG/Serial)
 const (
-	UartdevBufNo             = 0x3FCDF07C // ROM .bss variable indicating active port
-	UartdevBufNoUSBJTAG      = 3          // Value when USB-JTAG/Serial is active
-	RTCCntlBaseReg           = 0x60008000
-	RTCCntlWdtConfig0Reg     = RTCCntlBaseReg + 0x0090
-	RTCCntlWdtWprotectReg    = RTCCntlBaseReg + 0x00A8
-	RTCCntlWdtWkey           = 0x50D83AA1
-	RTCCntlSwdConfReg        = RTCCntlBaseReg + 0x00AC
-	RTCCntlSwdAutoFeedEn     = 1 << 31
-	RTCCntlSwdWprotectReg    = RTCCntlBaseReg + 0x00B0
-	RTCCntlSwdWkey           = 0x8F1D312A
+	UartdevBufNo          = 0x3FCDF07C // ROM .bss variable indicating active port
+	UartdevBufNoUSBJTAG   = 3          // Value when USB-JTAG/Serial is active
+	RTCCntlBaseReg        = 0x60008000
+	RTCCntlWdtConfig0Reg  = RTCCntlBaseReg + 0x0090
+	RTCCntlWdtWprotectReg = RTCCntlBaseReg + 0x00A8
+	RTCCntlWdtWkey        = 0x50D83AA1
+	RTCCntlSwdConfReg     = RTCCntlBaseReg + 0x00AC
+	RTCCntlSwdAutoFeedEn  = 1 << 31
+	RTCCntlSwdWprotectReg = RTCCntlBaseReg + 0x00B0
+	RTCCntlSwdWkey        = 0x8F1D312A
 )

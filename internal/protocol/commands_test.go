@@ -11,6 +11,7 @@ func TestChipName_KnownChips(t *testing.T) {
 		expected string
 	}{
 		{ChipIDESP32C3, "ESP32-C3"},
+		{ChipIDESP32S3, "ESP32-S3"},
 	}
 
 	for _, tc := range tests {
@@ -327,11 +328,18 @@ func TestCalculateEraseSize_Unaligned(t *testing.T) {
 	}
 }
 
-func TestParseSecurityInfo_Valid(t *testing.T) {
-	data := make([]byte, 4)
-	binary.LittleEndian.PutUint32(data, ChipIDESP32C3)
+// buildSecurityInfoPayload builds a 20-byte GET_SECURITY_INFO response body:
+// flags u32, flash_crypt_cnt u8, 7 key_purposes u8, chip_id u32, api_version u32.
+func buildSecurityInfoPayload(flags uint32, flashCryptCnt byte, chipID uint32) []byte {
+	data := make([]byte, 20)
+	binary.LittleEndian.PutUint32(data[0:4], flags)
+	data[4] = flashCryptCnt
+	binary.LittleEndian.PutUint32(data[12:16], chipID)
+	return data
+}
 
-	info, err := ParseSecurityInfo(data)
+func TestParseSecurityInfo_C3(t *testing.T) {
+	info, err := ParseSecurityInfo(buildSecurityInfoPayload(0x000000A5, 0x04, ChipIDESP32C3))
 	if err != nil {
 		t.Fatalf("ParseSecurityInfo() error = %v", err)
 	}
@@ -340,35 +348,43 @@ func TestParseSecurityInfo_Valid(t *testing.T) {
 	}
 }
 
-func TestParseSecurityInfo_LongerData(t *testing.T) {
-	// Real security info may have more data, we only read first 4 bytes
-	data := make([]byte, 32)
-	binary.LittleEndian.PutUint32(data, 0x12345678)
-
-	info, err := ParseSecurityInfo(data)
+func TestParseSecurityInfo_S3(t *testing.T) {
+	info, err := ParseSecurityInfo(buildSecurityInfoPayload(0x000000A5, 0x00, 0x09))
 	if err != nil {
 		t.Fatalf("ParseSecurityInfo() error = %v", err)
 	}
-	if info.ChipID != 0x12345678 {
-		t.Errorf("ParseSecurityInfo() ChipID = 0x%X, want 0x12345678", info.ChipID)
+	if info.ChipID != 0x09 {
+		t.Errorf("ParseSecurityInfo() ChipID = 0x%X, want 0x9", info.ChipID)
 	}
 }
 
+func TestParseSecurityInfo_PreservesFlagsAndCryptCount(t *testing.T) {
+	info, err := ParseSecurityInfo(buildSecurityInfoPayload(0x000000A5, 0x7F, ChipIDESP32C3))
+	if err != nil {
+		t.Fatalf("ParseSecurityInfo() error = %v", err)
+	}
+	if info.Flags != 0x000000A5 {
+		t.Errorf("ParseSecurityInfo() Flags = 0x%X, want 0xA5", info.Flags)
+	}
+	if info.FlashCryptCnt != 0x7F {
+		t.Errorf("ParseSecurityInfo() FlashCryptCnt = 0x%X, want 0x7F", info.FlashCryptCnt)
+	}
+
+}
+
 func TestParseSecurityInfo_TooShort(t *testing.T) {
-	shortData := []struct {
-		data []byte
-	}{
-		{nil},
-		{[]byte{}},
-		{[]byte{0x01}},
-		{[]byte{0x01, 0x02}},
-		{[]byte{0x01, 0x02, 0x03}},
+	shortData := [][]byte{
+		nil,
+		[]byte{},
+		[]byte{0x01},
+		make([]byte, 4),
+		make([]byte, 19),
 	}
 
 	for _, tc := range shortData {
-		_, err := ParseSecurityInfo(tc.data)
+		_, err := ParseSecurityInfo(tc)
 		if err == nil {
-			t.Errorf("ParseSecurityInfo(%v) expected error, got nil", tc.data)
+			t.Errorf("ParseSecurityInfo(%d bytes) expected error, got nil", len(tc))
 		}
 	}
 }

@@ -65,7 +65,12 @@ func (r *Request) Encode() []byte {
 }
 
 // DecodeResponse parses a response from raw bytes (after SLIP decoding).
-func DecodeResponse(data []byte) (*Response, error) {
+// statusBytes selects the trailer layout: protocol.ROMStatusBytes (4) for ROM
+// bootloader replies, protocol.StubStatusBytes (2) for stub flasher replies.
+func DecodeResponse(data []byte, statusBytes int) (*Response, error) {
+	if statusBytes != ROMStatusBytes && statusBytes != StubStatusBytes {
+		return nil, fmt.Errorf("invalid status trailer size: %d", statusBytes)
+	}
 	if len(data) < 10 {
 		return nil, fmt.Errorf("response too short: %d bytes", len(data))
 	}
@@ -85,10 +90,13 @@ func DecodeResponse(data []byte) (*Response, error) {
 		return nil, fmt.Errorf("data size mismatch: expected %d, have %d", dataSize, len(data)-8)
 	}
 
-	if dataSize >= 2 {
-		resp.Data = data[8 : 8+dataSize-2]
-		resp.Status = data[8+dataSize-2]
-		resp.Error = data[8+dataSize-1]
+	if int(dataSize) >= statusBytes {
+		// Trailer starts statusBytes before the declared end; status and error
+		// sit at its head, any reserved bytes belong to the trailer only.
+		trailer := 8 + int(dataSize) - statusBytes
+		resp.Data = data[8:trailer]
+		resp.Status = data[trailer]
+		resp.Error = data[trailer+1]
 	} else if dataSize > 0 {
 		resp.Data = data[8 : 8+dataSize]
 	}
@@ -246,17 +254,23 @@ func CalculateEraseSize(dataLen int) uint32 {
 	return uint32((dataLen + FlashSectorSize - 1) / FlashSectorSize * FlashSectorSize)
 }
 
-// ESP32C3Info contains chip information.
-type ESP32C3Info struct {
-	ChipID uint32
+// SecurityInfo contains chip identity from GET_SECURITY_INFO.
+type SecurityInfo struct {
+	Flags         uint32
+	FlashCryptCnt byte
+	ChipID        uint32
 }
 
 // ParseSecurityInfo parses the response from GET_SECURITY_INFO command.
-func ParseSecurityInfo(data []byte) (*ESP32C3Info, error) {
-	if len(data) < 4 {
+// Layout (ESP32-C3/S3): flags u32, flash_crypt_cnt u8, 7 key_purposes u8,
+// chip_id u32, api_version u32.
+func ParseSecurityInfo(data []byte) (*SecurityInfo, error) {
+	if len(data) < 20 {
 		return nil, fmt.Errorf("security info too short: %d bytes", len(data))
 	}
-	return &ESP32C3Info{
-		ChipID: binary.LittleEndian.Uint32(data[0:4]),
+	return &SecurityInfo{
+		Flags:         binary.LittleEndian.Uint32(data[0:4]),
+		FlashCryptCnt: data[4],
+		ChipID:        binary.LittleEndian.Uint32(data[12:16]),
 	}, nil
 }

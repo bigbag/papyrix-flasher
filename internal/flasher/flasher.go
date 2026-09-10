@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"fmt"
+	"math/bits"
 	"time"
 
 	"github.com/bigbag/papyrix-flasher/internal/protocol"
@@ -32,30 +33,50 @@ func New(port *serial.Port) *Flasher {
 	return &Flasher{port: port}
 }
 
-// Connect establishes connection with the bootloader.
-func (f *Flasher) Connect() error {
-	// Reset into bootloader
+// Identify resets the device, synchronizes with the ROM bootloader, and reads
+// its chip identity. It does not write registers, RAM, or flash.
+func (f *Flasher) Identify() (*protocol.SecurityInfo, error) {
+	f.stubRunning = false
+	f.buf = nil
+	f.pending = nil
+
 	if err := f.port.ResetToBootloader(); err != nil {
-		return fmt.Errorf("failed to reset into bootloader: %w", err)
+		return nil, fmt.Errorf("failed to reset into bootloader: %w", err)
 	}
-
-	// Sync with bootloader
 	if err := f.sync(); err != nil {
-		return fmt.Errorf("failed to sync with bootloader: %w", err)
+		return nil, fmt.Errorf("failed to sync with bootloader: %w", err)
 	}
 
-	// Disable watchdogs on USB-JTAG/Serial (ESP32-C3 specific).
-	// When using USB-JTAG/Serial, the RTC WDT and SWD are not auto-reset
-	// and will reset the board during flashing if not disabled.
-	if err := f.disableWatchdogs(); err != nil {
+	req := protocol.NewRequest(protocol.CmdGetSecurityInfo, nil)
+	if _, err := f.port.Write(slip.Encode(req.Encode())); err != nil {
+		return nil, fmt.Errorf("failed to request chip identity: %w", err)
+	}
+	resp, err := f.readResponse(protocol.CmdGetSecurityInfo, 5*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read chip identity: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return nil, fmt.Errorf("get security info failed: %s", resp.ErrorString())
+	}
+	return protocol.ParseSecurityInfo(resp.Data)
+}
+
+// Connect identifies the ROM, checks that it matches expectedChipID, disables
+// USB watchdogs when required, and starts the matching RAM stub.
+func (f *Flasher) Connect(expectedChipID uint32) error {
+	info, err := f.Identify()
+	if err != nil {
+		return err
+	}
+	if err := validateTarget(info, expectedChipID); err != nil {
+		return err
+	}
+	if err := f.disableWatchdogs(info.ChipID); err != nil {
 		return fmt.Errorf("failed to disable watchdogs: %w", err)
 	}
-
-	// Upload and run stub flasher
-	if err := f.uploadStub(); err != nil {
+	if err := f.uploadStub(info.ChipID); err != nil {
 		return fmt.Errorf("failed to upload stub flasher: %w", err)
 	}
-
 	return nil
 }
 
@@ -72,7 +93,7 @@ func (f *Flasher) sync() error {
 			continue
 		}
 
-		resp, err := f.readResponse(500 * time.Millisecond)
+		resp, err := f.readResponse(protocol.CmdSync, 500*time.Millisecond)
 		if err != nil {
 			continue
 		}
@@ -80,7 +101,7 @@ func (f *Flasher) sync() error {
 		if resp.Command == protocol.CmdSync && resp.IsSuccess() {
 			// Drain any additional sync responses
 			for i := 0; i < 7; i++ {
-				f.readResponse(100 * time.Millisecond)
+				f.readResponse(protocol.CmdSync, 100*time.Millisecond)
 			}
 			return nil
 		}
@@ -98,7 +119,7 @@ func (f *Flasher) readReg(addr uint32) (uint32, error) {
 		return 0, err
 	}
 
-	resp, err := f.readResponse(5 * time.Second)
+	resp, err := f.readResponse(protocol.CmdReadReg, 5*time.Second)
 	if err != nil {
 		return 0, err
 	}
@@ -116,51 +137,91 @@ func (f *Flasher) writeReg(addr, value, mask, delayUs uint32) error {
 	return f.sendCommand(req)
 }
 
-// disableWatchdogs disables RTC WDT and auto-feeds SWD when USB-JTAG/Serial is used.
-// Matches esptool's ESP32C3ROM._post_connect() -> disable_watchdogs().
-func (f *Flasher) disableWatchdogs() error {
-	uartNo, err := f.readReg(protocol.UartdevBufNo)
-	if err != nil {
-		// Can't detect port type — skip watchdog disable (might be UART)
-		return nil
-	}
+type watchdogConfig struct {
+	uartdevBufNo uint32
+	usbJTAGPort  uint32
+	wdtConfig0   uint32
+	wdtWprotect  uint32
+	swdConf      uint32
+	swdWprotect  uint32
+}
 
-	if (uartNo & 0xFF) != protocol.UartdevBufNoUSBJTAG {
-		return nil // Not USB-JTAG/Serial, no action needed
+func configForChip(chipID uint32) (watchdogConfig, error) {
+	switch chipID {
+	case protocol.ChipIDESP32C3:
+		return watchdogConfig{0x3FCDF07C, 3, 0x60008090, 0x600080A8, 0x600080AC, 0x600080B0}, nil
+	case protocol.ChipIDESP32S3:
+		return watchdogConfig{0x3FCEF14C, 4, 0x60008098, 0x600080B0, 0x600080B4, 0x600080B8}, nil
+	default:
+		return watchdogConfig{}, fmt.Errorf("unsupported device chip ID: 0x%02X", chipID)
 	}
+}
 
-	// Disable RTC WDT
-	if err := f.writeReg(protocol.RTCCntlWdtWprotectReg, protocol.RTCCntlWdtWkey, 0xFFFFFFFF, 0); err != nil {
-		return err
+func validateTarget(info *protocol.SecurityInfo, expectedChipID uint32) error {
+	switch info.ChipID {
+	case protocol.ChipIDESP32C3, protocol.ChipIDESP32S3:
+	default:
+		return fmt.Errorf("unsupported device chip ID: 0x%02X", info.ChipID)
 	}
-	if err := f.writeReg(protocol.RTCCntlWdtConfig0Reg, 0, 0xFFFFFFFF, 0); err != nil {
-		return err
+	if info.ChipID != expectedChipID {
+		return fmt.Errorf("firmware targets %s, but device is %s",
+			protocol.ChipName(expectedChipID), protocol.ChipName(info.ChipID))
 	}
-	if err := f.writeReg(protocol.RTCCntlWdtWprotectReg, 0, 0xFFFFFFFF, 0); err != nil {
-		return err
+	if info.Flags&0x5 != 0 {
+		return fmt.Errorf("secure boot or secure download mode is enabled")
 	}
-
-	// Auto-feed SWD
-	if err := f.writeReg(protocol.RTCCntlSwdWprotectReg, protocol.RTCCntlSwdWkey, 0xFFFFFFFF, 0); err != nil {
-		return err
+	if bits.OnesCount8(info.FlashCryptCnt)%2 != 0 {
+		return fmt.Errorf("flash encryption is enabled")
 	}
-	swdConf, err := f.readReg(protocol.RTCCntlSwdConfReg)
-	if err != nil {
-		return err
-	}
-	if err := f.writeReg(protocol.RTCCntlSwdConfReg, swdConf|protocol.RTCCntlSwdAutoFeedEn, 0xFFFFFFFF, 0); err != nil {
-		return err
-	}
-	if err := f.writeReg(protocol.RTCCntlSwdWprotectReg, 0, 0xFFFFFFFF, 0); err != nil {
-		return err
-	}
-
 	return nil
 }
 
+// disableWatchdogs disables RTC WDT and auto-feeds SWD when USB
+// Serial/JTAG is active.
+func (f *Flasher) disableWatchdogs(chipID uint32) error {
+	config, err := configForChip(chipID)
+	if err != nil {
+		return err
+	}
+	uartNo, err := f.readReg(config.uartdevBufNo)
+	if err != nil {
+		if chipID == protocol.ChipIDESP32S3 {
+			return fmt.Errorf("failed to read active ROM port: %w", err)
+		}
+		return nil
+	}
+	if chipID == protocol.ChipIDESP32S3 && uartNo&0xFF == 3 {
+		return fmt.Errorf("ESP32-S3 USB-OTG transport is not supported; use USB Serial/JTAG")
+	}
+	if uartNo&0xFF != config.usbJTAGPort {
+		return nil
+	}
+
+	if err := f.writeReg(config.wdtWprotect, protocol.RTCCntlWdtWkey, 0xFFFFFFFF, 0); err != nil {
+		return err
+	}
+	if err := f.writeReg(config.wdtConfig0, 0, 0xFFFFFFFF, 0); err != nil {
+		return err
+	}
+	if err := f.writeReg(config.wdtWprotect, 0, 0xFFFFFFFF, 0); err != nil {
+		return err
+	}
+	if err := f.writeReg(config.swdWprotect, protocol.RTCCntlSwdWkey, 0xFFFFFFFF, 0); err != nil {
+		return err
+	}
+	swdConf, err := f.readReg(config.swdConf)
+	if err != nil {
+		return err
+	}
+	if err := f.writeReg(config.swdConf, swdConf|protocol.RTCCntlSwdAutoFeedEn, 0xFFFFFFFF, 0); err != nil {
+		return err
+	}
+	return f.writeReg(config.swdWprotect, 0, 0xFFFFFFFF, 0)
+}
+
 // uploadStub uploads the stub flasher to RAM and executes it.
-func (f *Flasher) uploadStub() error {
-	s, err := stub.Get()
+func (f *Flasher) uploadStub(chipID uint32) error {
+	s, err := stub.Get(chipID)
 	if err != nil {
 		return err
 	}
@@ -190,7 +251,7 @@ func (f *Flasher) uploadStub() error {
 	if _, err := f.port.Write(frame); err != nil {
 		return fmt.Errorf("mem end write failed: %w", err)
 	}
-	f.readResponse(200 * time.Millisecond) // best-effort ROM response, ignore error
+	f.readResponse(protocol.CmdMemEnd, 200*time.Millisecond) // best-effort ROM response, ignore error
 
 	// Wait for "OHAI" greeting from stub (arrives as a raw SLIP packet)
 	if err := f.waitForOHAI(); err != nil {
@@ -276,7 +337,7 @@ func (f *Flasher) waitForOHAI() error {
 }
 
 // FlashImageCompressed flashes a binary image using deflate compression.
-func (f *Flasher) FlashImageCompressed(data []byte, address uint32, verify bool) error {
+func (f *Flasher) FlashImageCompressed(data []byte, address uint32) error {
 	// Compress the data using zlib (level 9, matches esptool)
 	var compressed bytes.Buffer
 	writer, err := zlib.NewWriterLevel(&compressed, zlib.BestCompression)
@@ -365,7 +426,7 @@ func (f *Flasher) FlashImageCompressed(data []byte, address uint32, verify bool)
 		// ROM: fire-and-forget
 		frame := slip.Encode(endReq.Encode())
 		f.port.Write(frame)
-		f.readResponse(2 * time.Second)
+		f.readResponse(protocol.CmdFlashDeflEnd, 2*time.Second)
 	}
 
 	return nil
@@ -411,6 +472,15 @@ func (f *Flasher) Reboot() error {
 	return f.port.HardReset()
 }
 
+// statusBytes returns the response trailer size: ROM replies carry four
+// status bytes, stub flasher replies only two.
+func (f *Flasher) statusBytes() int {
+	if f.stubRunning {
+		return protocol.StubStatusBytes
+	}
+	return protocol.ROMStatusBytes
+}
+
 // sendCommand sends a command and waits for successful response.
 func (f *Flasher) sendCommand(req *protocol.Request) error {
 	return f.sendCommandWithTimeout(req, 5*time.Second)
@@ -424,7 +494,7 @@ func (f *Flasher) sendCommandWithTimeout(req *protocol.Request, timeout time.Dur
 		return err
 	}
 
-	resp, err := f.readResponse(timeout)
+	resp, err := f.readResponse(req.Command, timeout)
 	if err != nil {
 		return err
 	}
@@ -439,7 +509,7 @@ func (f *Flasher) sendCommandWithTimeout(req *protocol.Request, timeout time.Dur
 // readResponse reads and decodes a protocol response from the shared buffer.
 // Non-response SLIP packets (< 10 bytes, like OHAI) are consumed from buf
 // and saved in pending for later retrieval by waitForOHAI.
-func (f *Flasher) readResponse(timeout time.Duration) (*protocol.Response, error) {
+func (f *Flasher) readResponse(expectedCommand byte, timeout time.Duration) (*protocol.Response, error) {
 	deadline := time.Now().Add(timeout)
 	chunk := make([]byte, 256)
 
@@ -453,7 +523,14 @@ func (f *Flasher) readResponse(timeout time.Duration) (*protocol.Response, error
 			f.buf = remaining
 			data := slip.Decode(frame)
 			if len(data) >= 10 {
-				return protocol.DecodeResponse(data)
+				resp, err := protocol.DecodeResponse(data, f.statusBytes())
+				if err != nil {
+					return nil, err
+				}
+				if resp.Command != expectedCommand {
+					continue
+				}
+				return resp, nil
 			}
 			// Non-response packet (e.g. OHAI): save for waitForOHAI.
 			f.pending = append(f.pending, data)
