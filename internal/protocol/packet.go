@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 // Request represents an ESP32 bootloader request packet.
@@ -50,9 +51,35 @@ func xorChecksum(data []byte) uint32 {
 	return uint32(checksum)
 }
 
-// Encode serializes the request to bytes (before SLIP encoding).
-func (r *Request) Encode() []byte {
-	size := uint16(len(r.Data))
+// Uint32Len converts n to uint32.
+// It returns an error when n is outside the uint32 range.
+func Uint32Len(n int) (uint32, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("value %d is outside the uint32 range", n)
+	}
+	if n > math.MaxUint32 {
+		return 0, fmt.Errorf("value %d is outside the uint32 range", n)
+	}
+	return uint32(n), nil
+}
+
+func uint16Len(n int) (uint16, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("value %d is outside the uint16 range", n)
+	}
+	if n > math.MaxUint16 {
+		return 0, fmt.Errorf("value %d is outside the uint16 range", n)
+	}
+	return uint16(n), nil
+}
+
+// Encode serializes the request to bytes before SLIP encoding.
+// It returns an error when the data length is greater than 65535.
+func (r *Request) Encode() ([]byte, error) {
+	size, err := uint16Len(len(r.Data))
+	if err != nil {
+		return nil, err
+	}
 	packet := make([]byte, 8+len(r.Data))
 
 	packet[0] = DirRequest
@@ -61,7 +88,7 @@ func (r *Request) Encode() []byte {
 	binary.LittleEndian.PutUint32(packet[4:8], r.Checksum)
 	copy(packet[8:], r.Data)
 
-	return packet
+	return packet, nil
 }
 
 // DecodeResponse parses a response from raw bytes (after SLIP decoding).
@@ -169,14 +196,19 @@ func FlashDeflBeginData(eraseSize, numBlocks, blockSize, offset uint32) []byte {
 }
 
 // FlashDeflDataData creates the data payload for FLASH_DEFL_DATA command.
-func FlashDeflDataData(compressedData []byte, seq uint32) []byte {
+// It returns an error when the block length is outside the uint32 range.
+func FlashDeflDataData(compressedData []byte, seq uint32) ([]byte, error) {
+	n, err := Uint32Len(len(compressedData))
+	if err != nil {
+		return nil, err
+	}
 	payload := make([]byte, 16+len(compressedData))
-	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(compressedData)))
+	binary.LittleEndian.PutUint32(payload[0:4], n)
 	binary.LittleEndian.PutUint32(payload[4:8], seq)
 	binary.LittleEndian.PutUint32(payload[8:12], 0)
 	binary.LittleEndian.PutUint32(payload[12:16], 0)
 	copy(payload[16:], compressedData)
-	return payload
+	return payload, nil
 }
 
 // FlashDeflEndData creates the data payload for FLASH_DEFL_END command.
@@ -201,14 +233,19 @@ func MemBeginData(totalSize, numBlocks, blockSize, offset uint32) []byte {
 }
 
 // MemDataData creates the data payload for MEM_DATA command.
-func MemDataData(blockData []byte, seq uint32) []byte {
+// It returns an error when the block length is outside the uint32 range.
+func MemDataData(blockData []byte, seq uint32) ([]byte, error) {
+	n, err := Uint32Len(len(blockData))
+	if err != nil {
+		return nil, err
+	}
 	payload := make([]byte, 16+len(blockData))
-	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(blockData)))
+	binary.LittleEndian.PutUint32(payload[0:4], n)
 	binary.LittleEndian.PutUint32(payload[4:8], seq)
 	binary.LittleEndian.PutUint32(payload[8:12], 0)
 	binary.LittleEndian.PutUint32(payload[12:16], 0)
 	copy(payload[16:], blockData)
-	return payload
+	return payload, nil
 }
 
 // MemEndData creates the data payload for MEM_END command.
@@ -245,13 +282,22 @@ func ChangeBaudrateData(newBaud, oldBaud uint32) []byte {
 }
 
 // CalculateDeflBlocks calculates the number of compressed blocks.
-func CalculateDeflBlocks(compressedLen, blockSize int) uint32 {
-	return uint32((compressedLen + blockSize - 1) / blockSize)
+// It returns an error when a length is negative, the block size is not positive, or the count is outside the uint32 range.
+func CalculateDeflBlocks(compressedLen, blockSize int) (uint32, error) {
+	if blockSize <= 0 || compressedLen < 0 || compressedLen > math.MaxInt-blockSize {
+		return 0, fmt.Errorf("invalid block inputs %d, %d", compressedLen, blockSize)
+	}
+	return Uint32Len((compressedLen + blockSize - 1) / blockSize)
 }
 
 // CalculateEraseSize calculates the erase size rounded to sector boundary.
-func CalculateEraseSize(dataLen int) uint32 {
-	return uint32((dataLen + FlashSectorSize - 1) / FlashSectorSize * FlashSectorSize)
+// It returns an error when the data length is negative or the size is outside the uint32 range.
+func CalculateEraseSize(dataLen int) (uint32, error) {
+	if dataLen < 0 || dataLen > math.MaxInt-FlashSectorSize {
+		return 0, fmt.Errorf("data length %d is out of range", dataLen)
+	}
+	size := (dataLen + FlashSectorSize - 1) / FlashSectorSize * FlashSectorSize
+	return Uint32Len(size)
 }
 
 // SecurityInfo contains chip identity from GET_SECURITY_INFO.

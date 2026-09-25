@@ -184,8 +184,10 @@ func TestFlashDeflDataData(t *testing.T) {
 	compressedData := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
 	seq := uint32(7)
 
-	data := FlashDeflDataData(compressedData, seq)
-
+	data, err := FlashDeflDataData(compressedData, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
 	expectedLen := 16 + len(compressedData)
 	if len(data) != expectedLen {
 		t.Errorf("FlashDeflDataData() length = %d, want %d", len(data), expectedLen)
@@ -253,7 +255,11 @@ func TestCalculateDeflBlocks_Exact(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result := CalculateDeflBlocks(tc.compressedLen, tc.blockSize)
+		result, err := CalculateDeflBlocks(tc.compressedLen, tc.blockSize)
+		if err != nil {
+			t.Errorf("CalculateDeflBlocks(%d, %d) error = %v", tc.compressedLen, tc.blockSize, err)
+			continue
+		}
 		if result != tc.expected {
 			t.Errorf("CalculateDeflBlocks(%d, %d) = %d, want %d",
 				tc.compressedLen, tc.blockSize, result, tc.expected)
@@ -280,7 +286,11 @@ func TestCalculateDeflBlocks_Remainder(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result := CalculateDeflBlocks(tc.compressedLen, tc.blockSize)
+		result, err := CalculateDeflBlocks(tc.compressedLen, tc.blockSize)
+		if err != nil {
+			t.Errorf("CalculateDeflBlocks(%d, %d) error = %v", tc.compressedLen, tc.blockSize, err)
+			continue
+		}
 		if result != tc.expected {
 			t.Errorf("CalculateDeflBlocks(%d, %d) = %d, want %d",
 				tc.compressedLen, tc.blockSize, result, tc.expected)
@@ -301,7 +311,11 @@ func TestCalculateEraseSize_Aligned(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result := CalculateEraseSize(tc.dataLen)
+		result, err := CalculateEraseSize(tc.dataLen)
+		if err != nil {
+			t.Errorf("CalculateEraseSize(%d) error = %v", tc.dataLen, err)
+			continue
+		}
 		if result != tc.expected {
 			t.Errorf("CalculateEraseSize(%d) = %d, want %d", tc.dataLen, result, tc.expected)
 		}
@@ -321,10 +335,26 @@ func TestCalculateEraseSize_Unaligned(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result := CalculateEraseSize(tc.dataLen)
+		result, err := CalculateEraseSize(tc.dataLen)
+		if err != nil {
+			t.Errorf("CalculateEraseSize(%d) error = %v", tc.dataLen, err)
+			continue
+		}
 		if result != tc.expected {
 			t.Errorf("CalculateEraseSize(%d) = %d, want %d", tc.dataLen, result, tc.expected)
 		}
+	}
+}
+
+func TestCalculateEraseSize_RejectsNegative(t *testing.T) {
+	if _, err := CalculateEraseSize(-1); err == nil {
+		t.Fatal("negative length accepted")
+	}
+}
+
+func TestCalculateDeflBlocks_RejectsZeroBlockSize(t *testing.T) {
+	if _, err := CalculateDeflBlocks(1, 0); err == nil {
+		t.Fatal("zero block size accepted")
 	}
 }
 
@@ -424,8 +454,10 @@ func TestMemDataData(t *testing.T) {
 	blockData := []byte{0xDE, 0xAD, 0xBE, 0xEF}
 	seq := uint32(3)
 
-	data := MemDataData(blockData, seq)
-
+	data, err := MemDataData(blockData, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
 	expectedLen := 16 + len(blockData)
 	if len(data) != expectedLen {
 		t.Errorf("MemDataData() length = %d, want %d", len(data), expectedLen)

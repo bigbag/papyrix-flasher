@@ -72,8 +72,10 @@ func TestNewRequest_Fields(t *testing.T) {
 func TestRequest_Encode_Format(t *testing.T) {
 	data := []byte{0xAA, 0xBB}
 	req := NewRequest(CmdSync, data)
-	encoded := req.Encode()
-
+	encoded, err := req.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Format: direction(1) + cmd(1) + len(2) + checksum(4) + data
 	expectedLen := 8 + len(data)
 	if len(encoded) != expectedLen {
@@ -110,8 +112,10 @@ func TestRequest_Encode_Format(t *testing.T) {
 
 func TestRequest_Encode_EmptyData(t *testing.T) {
 	req := NewRequest(CmdSync, nil)
-	encoded := req.Encode()
-
+	encoded, err := req.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(encoded) != 8 {
 		t.Fatalf("Encode() length = %d, want 8", len(encoded))
 	}
@@ -129,8 +133,10 @@ func TestRequest_Encode_LargeData(t *testing.T) {
 	}
 
 	req := NewRequest(CmdFlashDeflData, data)
-	encoded := req.Encode()
-
+	encoded, err := req.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(encoded) != 8+len(data) {
 		t.Fatalf("Encode() length = %d, want %d", len(encoded), 8+len(data))
 	}
@@ -138,6 +144,13 @@ func TestRequest_Encode_LargeData(t *testing.T) {
 	dataLen := binary.LittleEndian.Uint16(encoded[2:4])
 	if dataLen != uint16(len(data)) {
 		t.Errorf("Encode() data length = %d, want %d", dataLen, len(data))
+	}
+}
+
+func TestRequest_Encode_RejectsOversize(t *testing.T) {
+	req := NewRequest(CmdSync, make([]byte, 65536))
+	if _, err := req.Encode(); err == nil {
+		t.Fatal("oversize request accepted")
 	}
 }
 

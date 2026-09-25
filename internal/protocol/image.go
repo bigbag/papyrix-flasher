@@ -54,7 +54,8 @@ func ValidateApplication(data []byte) (uint32, error) {
 			return 0, fmt.Errorf("segment %d header out of bounds", i)
 		}
 		size := binary.LittleEndian.Uint32(data[cursor+4 : cursor+8])
-		if uint64(size) > uint64(len(data)-cursor-8) {
+		remain, err := Uint32Len(len(data) - cursor - 8)
+		if err != nil || size > remain {
 			return 0, fmt.Errorf("segment %d length %d runs past end of image", i, size)
 		}
 		segStart := cursor + 8

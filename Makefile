@@ -5,7 +5,7 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main
 
 READER_DIR ?= ../papyrix-reader
 
-.PHONY: build build-all clean test fmt lint release tag update-embedded help
+.PHONY: build build-all clean test fmt lint security release tag update-embedded help
 
 .DEFAULT_GOAL := help
 
@@ -37,6 +37,9 @@ fmt: ## Format code
 
 lint: ## Run linter (requires golangci-lint)
 	golangci-lint run
+
+security: ## Scan Go code
+	go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 ./...
 
 ## Release:
 

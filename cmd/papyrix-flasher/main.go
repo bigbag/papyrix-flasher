@@ -57,6 +57,7 @@ func runFlash(cmd *cobra.Command, args []string) error {
 	firmwarePath := args[0]
 
 	// Read firmware file
+	// #nosec G304 -- The operator sets the firmware file path.
 	firmware, err := os.ReadFile(firmwarePath)
 	if err != nil {
 		return fmt.Errorf("failed to read firmware file: %w", err)

@@ -48,7 +48,11 @@ func (f *Flasher) Identify() (*protocol.SecurityInfo, error) {
 	}
 
 	req := protocol.NewRequest(protocol.CmdGetSecurityInfo, nil)
-	if _, err := f.port.Write(slip.Encode(req.Encode())); err != nil {
+	frame, err := encodeFrame(req)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.port.Write(frame); err != nil {
 		return nil, fmt.Errorf("failed to request chip identity: %w", err)
 	}
 	resp, err := f.readResponse(protocol.CmdGetSecurityInfo, 5*time.Second)
@@ -83,10 +87,15 @@ func (f *Flasher) Connect(expectedChipID uint32) error {
 // sync sends the SYNC command to establish communication.
 func (f *Flasher) sync() error {
 	syncReq := protocol.NewRequest(protocol.CmdSync, protocol.SyncData())
-	frame := slip.Encode(syncReq.Encode())
+	frame, err := encodeFrame(syncReq)
+	if err != nil {
+		return err
+	}
 
-	for attempt := 0; attempt < 10; attempt++ {
-		f.port.Flush()
+	for range 10 {
+		if err := f.port.Flush(); err != nil {
+			continue
+		}
 		f.buf = nil
 
 		if _, err := f.port.Write(frame); err != nil {
@@ -100,8 +109,10 @@ func (f *Flasher) sync() error {
 
 		if resp.Command == protocol.CmdSync && resp.IsSuccess() {
 			// Drain any additional sync responses
-			for i := 0; i < 7; i++ {
-				f.readResponse(protocol.CmdSync, 100*time.Millisecond)
+			for range 7 {
+				if _, err := f.readResponse(protocol.CmdSync, 100*time.Millisecond); err != nil {
+					break
+				}
 			}
 			return nil
 		}
@@ -113,7 +124,10 @@ func (f *Flasher) sync() error {
 // readReg reads a 32-bit register on the target.
 func (f *Flasher) readReg(addr uint32) (uint32, error) {
 	req := protocol.NewRequest(protocol.CmdReadReg, protocol.ReadRegData(addr))
-	frame := slip.Encode(req.Encode())
+	frame, err := encodeFrame(req)
+	if err != nil {
+		return 0, err
+	}
 
 	if _, err := f.port.Write(frame); err != nil {
 		return 0, err
@@ -247,11 +261,16 @@ func (f *Flasher) uploadStub(chipID uint32) error {
 	fmt.Println("Running stub flasher...")
 	endData := protocol.MemEndData(0, s.Entry)
 	endReq := protocol.NewRequest(protocol.CmdMemEnd, endData)
-	frame := slip.Encode(endReq.Encode())
+	frame, err := encodeFrame(endReq)
+	if err != nil {
+		return err
+	}
 	if _, err := f.port.Write(frame); err != nil {
 		return fmt.Errorf("mem end write failed: %w", err)
 	}
-	f.readResponse(protocol.CmdMemEnd, 200*time.Millisecond) // best-effort ROM response, ignore error
+	if _, err := f.readResponse(protocol.CmdMemEnd, 200*time.Millisecond); err != nil {
+		// The ROM may stop before it sends MEM_END. The stub greeting is the success check.
+	}
 
 	// Wait for "OHAI" greeting from stub (arrives as a raw SLIP packet)
 	if err := f.waitForOHAI(); err != nil {
@@ -267,8 +286,16 @@ func (f *Flasher) uploadStub(chipID uint32) error {
 func (f *Flasher) writeMemSegment(data []byte, offset uint32) error {
 	blockSize := protocol.MemBlockSize
 	numBlocks := (len(data) + blockSize - 1) / blockSize
+	total, err := protocol.Uint32Len(len(data))
+	if err != nil {
+		return err
+	}
+	blocks, err := protocol.Uint32Len(numBlocks)
+	if err != nil {
+		return err
+	}
 
-	beginData := protocol.MemBeginData(uint32(len(data)), uint32(numBlocks), uint32(blockSize), offset)
+	beginData := protocol.MemBeginData(total, blocks, uint32(blockSize), offset)
 	beginReq := protocol.NewRequest(protocol.CmdMemBegin, beginData)
 	if err := f.sendCommand(beginReq); err != nil {
 		return err
@@ -282,7 +309,10 @@ func (f *Flasher) writeMemSegment(data []byte, offset uint32) error {
 		}
 
 		block := data[start:end]
-		blockData := protocol.MemDataData(block, uint32(seq))
+		blockData, err := protocol.MemDataData(block, uint32(seq))
+		if err != nil {
+			return err
+		}
 		blockReq := protocol.NewDataRequest(protocol.CmdMemData, blockData, block)
 		if err := f.sendCommand(blockReq); err != nil {
 			return fmt.Errorf("block %d failed: %w", seq, err)
@@ -358,13 +388,22 @@ func (f *Flasher) FlashImageCompressed(data []byte, address uint32) error {
 	if f.stubRunning {
 		blockSize = protocol.StubFlashWriteSize
 	}
-	numBlocks := protocol.CalculateDeflBlocks(len(compressedData), blockSize)
+	numBlocks, err := protocol.CalculateDeflBlocks(len(compressedData), blockSize)
+	if err != nil {
+		return err
+	}
 
 	// The stub expects uncompressed size as the first param and erases as it writes.
 	// The ROM bootloader expects the erase size rounded to sector boundary.
-	eraseSize := uint32(len(data))
+	eraseSize, err := protocol.Uint32Len(len(data))
+	if err != nil {
+		return err
+	}
 	if !f.stubRunning {
-		eraseSize = protocol.CalculateEraseSize(len(data))
+		eraseSize, err = protocol.CalculateEraseSize(len(data))
+		if err != nil {
+			return err
+		}
 	}
 
 	// Send FLASH_DEFL_BEGIN
@@ -391,18 +430,23 @@ func (f *Flasher) FlashImageCompressed(data []byte, address uint32) error {
 		}
 
 		block := compressedData[start:end]
-		blockData := protocol.FlashDeflDataData(block, uint32(seq))
+		blockData, err := protocol.FlashDeflDataData(block, uint32(seq))
+		if err != nil {
+			return err
+		}
 		blockReq := protocol.NewDataRequest(protocol.CmdFlashDeflData, blockData, block)
 
 		// Retry up to 3 times on timeout
 		var sendErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for range 3 {
 			sendErr = f.sendCommand(blockReq)
 			if sendErr == nil {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
-			f.port.Flush()
+			if err := f.port.Flush(); err != nil {
+				continue
+			}
 			f.buf = nil
 		}
 		if sendErr != nil {
@@ -424,9 +468,16 @@ func (f *Flasher) FlashImageCompressed(data []byte, address uint32) error {
 		}
 	} else {
 		// ROM: fire-and-forget
-		frame := slip.Encode(endReq.Encode())
-		f.port.Write(frame)
-		f.readResponse(protocol.CmdFlashDeflEnd, 2*time.Second)
+		frame, err := encodeFrame(endReq)
+		if err != nil {
+			return err
+		}
+		if _, err := f.port.Write(frame); err != nil {
+			return fmt.Errorf("flash defl end write failed: %w", err)
+		}
+		if _, err := f.readResponse(protocol.CmdFlashDeflEnd, 2*time.Second); err != nil {
+			// The ROM may not reply before it runs the written image.
+		}
 	}
 
 	return nil
@@ -461,9 +512,12 @@ func printProgress(written, total int, startTime time.Time) {
 func (f *Flasher) Reboot() error {
 	endData := protocol.FlashEndData(true)
 	endReq := protocol.NewRequest(protocol.CmdFlashEnd, endData)
-	frame := slip.Encode(endReq.Encode())
+	frame, err := encodeFrame(endReq)
+	if err != nil {
+		return err
+	}
 
-	_, err := f.port.Write(frame)
+	_, err = f.port.Write(frame)
 	if err != nil {
 		return err
 	}
@@ -488,7 +542,10 @@ func (f *Flasher) sendCommand(req *protocol.Request) error {
 
 // sendCommandWithTimeout sends a command with a specific timeout.
 func (f *Flasher) sendCommandWithTimeout(req *protocol.Request, timeout time.Duration) error {
-	frame := slip.Encode(req.Encode())
+	frame, err := encodeFrame(req)
+	if err != nil {
+		return err
+	}
 
 	if _, err := f.port.Write(frame); err != nil {
 		return err
@@ -504,6 +561,14 @@ func (f *Flasher) sendCommandWithTimeout(req *protocol.Request, timeout time.Dur
 	}
 
 	return nil
+}
+
+func encodeFrame(req *protocol.Request) ([]byte, error) {
+	packet, err := req.Encode()
+	if err != nil {
+		return nil, err
+	}
+	return slip.Encode(packet), nil
 }
 
 // readResponse reads and decodes a protocol response from the shared buffer.

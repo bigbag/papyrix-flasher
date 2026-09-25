@@ -46,7 +46,9 @@ func Open(portName string, baudRate int) (*Port, error) {
 
 	// Set read timeout
 	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
-		port.Close()
+		if closeErr := port.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to set read timeout: %w; close: %v", err, closeErr)
+		}
 		return nil, fmt.Errorf("failed to set read timeout: %w", err)
 	}
 
@@ -210,7 +212,9 @@ func (p *Port) ResetToBootloader() error {
 	}
 
 	// Flush any garbage from reset
-	p.Flush()
+	if err := p.Flush(); err != nil {
+		return err
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	return nil

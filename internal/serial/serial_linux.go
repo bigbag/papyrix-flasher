@@ -104,6 +104,15 @@ type termios struct {
 	Ospeed uint32
 }
 
+func ioctl[T any](fd, req uintptr, arg *T) error {
+	// #nosec G103 -- Linux ioctl requires the argument address.
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, req, uintptr(unsafe.Pointer(arg)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 // RawPort is a serial port using raw syscalls
 type RawPort struct {
 	fd           int
@@ -136,7 +145,9 @@ func OpenRaw(portName string, baudRate int) (*RawPort, error) {
 
 	// Configure the port
 	if err := port.configure(); err != nil {
-		syscall.Close(fd)
+		if closeErr := syscall.Close(fd); closeErr != nil {
+			return nil, fmt.Errorf("%w; close: %v", err, closeErr)
+		}
 		return nil, err
 	}
 
@@ -147,8 +158,8 @@ func (p *RawPort) configure() error {
 	var t termios
 
 	// Get current termios
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCGETS, uintptr(unsafe.Pointer(&t))); errno != 0 {
-		return fmt.Errorf("tcgetattr failed: %v", errno)
+	if err := ioctl(uintptr(p.fd), TCGETS, &t); err != nil {
+		return fmt.Errorf("tcgetattr failed: %v", err)
 	}
 
 	// Get baud rate code
@@ -175,8 +186,8 @@ func (p *RawPort) configure() error {
 	t.Cc[VTIME] = 1
 
 	// Set termios
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCSETSW, uintptr(unsafe.Pointer(&t))); errno != 0 {
-		return fmt.Errorf("tcsetattr failed: %v", errno)
+	if err := ioctl(uintptr(p.fd), TCSETSW, &t); err != nil {
+		return fmt.Errorf("tcsetattr failed: %v", err)
 	}
 
 	p.currentVtime = 1
@@ -207,7 +218,9 @@ func (p *RawPort) Write(data []byte) (int, error) {
 		return n, err
 	}
 	// Drain after write to ensure data is transmitted
-	p.drain()
+	if err := p.drain(); err != nil {
+		return n, err
+	}
 	return n, nil
 }
 
@@ -238,12 +251,12 @@ func (p *RawPort) ReadWithTimeout(buf []byte, timeout time.Duration) (int, error
 	newVtime := uint8(vtime)
 	if newVtime != p.currentVtime {
 		var t termios
-		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCGETS, uintptr(unsafe.Pointer(&t))); errno != 0 {
-			return 0, errno
+		if err := ioctl(uintptr(p.fd), TCGETS, &t); err != nil {
+			return 0, err
 		}
 		t.Cc[VTIME] = newVtime
-		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TCSETSW, uintptr(unsafe.Pointer(&t))); errno != 0 {
-			return 0, errno
+		if err := ioctl(uintptr(p.fd), TCSETSW, &t); err != nil {
+			return 0, err
 		}
 		p.currentVtime = newVtime
 	}
@@ -264,8 +277,8 @@ func (p *RawPort) Flush() error {
 // SetDTR sets the DTR signal
 func (p *RawPort) SetDTR(value bool) error {
 	var bits int
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TIOCMGET, uintptr(unsafe.Pointer(&bits))); errno != 0 {
-		return errno
+	if err := ioctl(uintptr(p.fd), TIOCMGET, &bits); err != nil {
+		return err
 	}
 
 	if value {
@@ -274,8 +287,8 @@ func (p *RawPort) SetDTR(value bool) error {
 		bits &^= TIOCM_DTR
 	}
 
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TIOCMSET, uintptr(unsafe.Pointer(&bits))); errno != 0 {
-		return errno
+	if err := ioctl(uintptr(p.fd), TIOCMSET, &bits); err != nil {
+		return err
 	}
 	return nil
 }
@@ -283,8 +296,8 @@ func (p *RawPort) SetDTR(value bool) error {
 // SetRTS sets the RTS signal
 func (p *RawPort) SetRTS(value bool) error {
 	var bits int
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TIOCMGET, uintptr(unsafe.Pointer(&bits))); errno != 0 {
-		return errno
+	if err := ioctl(uintptr(p.fd), TIOCMGET, &bits); err != nil {
+		return err
 	}
 
 	if value {
@@ -293,8 +306,8 @@ func (p *RawPort) SetRTS(value bool) error {
 		bits &^= TIOCM_RTS
 	}
 
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(p.fd), TIOCMSET, uintptr(unsafe.Pointer(&bits))); errno != 0 {
-		return errno
+	if err := ioctl(uintptr(p.fd), TIOCMSET, &bits); err != nil {
+		return err
 	}
 	return nil
 }
@@ -338,7 +351,9 @@ func (p *RawPort) ResetToBootloader() error {
 	}
 
 	// Flush any garbage from reset
-	p.Flush()
+	if err := p.Flush(); err != nil {
+		return err
+	}
 	time.Sleep(100 * time.Millisecond)
 
 	return nil
